@@ -33,6 +33,7 @@
 # Build directory
 /build/*
 !/build/.emptydirectory
+out/*
 
 # Debug build directory
 /build-debug/*
