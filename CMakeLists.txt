@@ -66,6 +66,11 @@ add_subdirectory(lib/SFML)
 add_subdirectory (lib/fmt)
 
 #
+# Add Addimp
+#
+add_subdirectory (lib/assimp)
+
+#
 # GLAD
 #
 if (NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include)
@@ -87,8 +92,8 @@ include_directories (src/
                      lib/glm/
                      lib/stb/
                      lib/arrrgh/
-                     lib/SFML/include/)
-
+                     lib/SFML/include/
+                     lib/assimp/include/)
 
 #
 # Add files
@@ -125,11 +130,12 @@ add_definitions (-DGLFW_INCLUDE_NONE
                  -DPROJECT_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\")
 add_executable (${PROJECT_NAME} ${PROJECT_SOURCES} ${PROJECT_HEADERS}
                                 ${PROJECT_SHADERS} ${PROJECT_CONFIGS}
-                                ${VENDORS_SOURCES} "src/program.cpp" "src/gamelogic.cpp" "src/utilities/timeutils.cpp" "src/utilities/timeutils.h" "src/utilities/camera.h")
+                                ${VENDORS_SOURCES} "src/program.cpp" "src/gamelogic.cpp" "src/utilities/timeutils.cpp" "src/utilities/timeutils.h" "src/utilities/camera.h" "src/utilities/mesh.h" "src/utilities/mesh.cpp" "src/utilities/structs.h")
 target_link_libraries (${PROJECT_NAME}
                        glfw
                        sfml-audio
                        fmt::fmt
+                       assimp::assimp
                        ${GLFW_LIBRARIES}
                        ${GLAD_LIBRARIES})
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT Raytraced_Fog)

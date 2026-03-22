@@ -14,13 +14,22 @@
 #include "gamelogic.h"
 #include "utilities/window.hpp"
 #include "utilities/timeutils.h"
+#include "utilities/structs.h"
+#include "utilities/mesh.h"
+#include "utilities/bvh.hpp"
+#include "utilities/scene.hpp"
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/transform.hpp>
 
 
 Fog::Shader* shader;
 Fog::Shader* compShader;
-Fog::Camera* camera = new Fog::Camera();;
+Fog::Camera* camera = new Fog::Camera();
+
+Scene* scene = new Scene();
+
+Mesh* torusMesh = new Mesh();
+Mesh* sphereMesh = new Mesh();
 
 const float debug_startTime = 0;
 double totalElapsedTime = debug_startTime;
@@ -64,6 +73,48 @@ void initGame(GLFWwindow* window) {
     compShader->makeFreakShader("../res/shaders/simple.comp");
     compShader->activate();
 
+    if (!torusMesh->loadFromFile("../res/models/torus.fbx")) {
+        std::cout << "Error in loading torus" << std::endl;
+    };
+
+    if (!sphereMesh->loadFromFile("../res/models/sphere.fbx")) {
+        std::cout << "Error in loading sphere" << std::endl;
+    };
+
+    scene->meshes.push_back(torusMesh);
+    scene->meshes.push_back(sphereMesh);
+    scene->build();
+
+    std::vector<Vertex> allVertices;
+    std::vector<uint32_t> allIndices;
+    std::vector<BVHNode> allNodes;
+    std::vector<MeshGPU> meshInfos;
+
+    int vertexOffset = 0;
+    int indexOffset = 0;
+    int nodeOffset = 0;
+
+    for (int i = 0; i < scene->meshes.size(); i++) {
+        allVertices.insert(allVertices.end(), scene->meshes[i]->vertices.begin(), scene->meshes[i]->vertices.end());
+
+        for (auto idx : scene->meshes[i]->indices) {
+            allIndices.push_back(idx + vertexOffset);
+        }
+        allNodes.insert(allNodes.end(), scene->bvhs[i].nodes.begin(), scene->bvhs[i].nodes.end());
+        meshInfos.push_back({
+            vertexOffset,
+            indexOffset,
+            static_cast<int>(scene->meshes[i]->indices.size()),
+            nodeOffset,
+            static_cast<int>(scene->bvhs[i].nodes.size())
+            });
+
+        vertexOffset += scene->meshes[i]->vertices.size();
+        indexOffset += scene->meshes[i]->indices.size();
+        nodeOffset += scene->bvhs[i].nodes.size();
+    }
+
+    //Generate scree quad
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
 
@@ -72,6 +123,49 @@ void initGame(GLFWwindow* window) {
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+
+    //-- Abyssmal dogshit
+    // BVH nodes
+    GLuint bvhBuffer;
+    glGenBuffers(1, &bvhBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, bvhBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+        allNodes.size() * sizeof(BVHNode),
+        allNodes.data(),
+        GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, bvhBuffer);
+
+    // Vertex buffer
+    GLuint vertexBuffer;
+    glGenBuffers(1, &vertexBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, vertexBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+        allVertices.size() * sizeof(Vertex),
+        allVertices.data(),
+        GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, vertexBuffer);
+
+    // Index buffer
+    GLuint indexBuffer;
+    glGenBuffers(1, &indexBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, indexBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+        allIndices.size() * sizeof(uint32_t),
+        allIndices.data(),
+        GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, indexBuffer);
+
+    // Mesh info buffer
+    GLuint meshBuffer;
+    glGenBuffers(1, &meshBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, meshBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+        meshInfos.size() * sizeof(MeshGPU),
+        meshInfos.data(),
+        GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, meshBuffer);
+
 }
 
 void updateFrame(GLFWwindow* window) {
