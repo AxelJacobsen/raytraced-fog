@@ -10,48 +10,75 @@ layout(rgba32f, binding = 0) uniform image2D img;
 // -------------------------
 // Constants
 // -------------------------
-#define MAX_MESHES 16
+#define MAX_MESHES 8
 #define MAX_STACK_SIZE 64
 #define MAX_BVH_NODES 8192
 #define MAX_VERTICES 65536
 #define MAX_INDICES 196608
 
+struct MeshInfo {
+    int vertexOffset;
+    int indexOffset;
+    int indexCount;
+    int bvhOffset;
+    int bvhNodeCount;
+    int vertexCount;
+};
+
+struct Vertex {
+    vec4 position;
+    vec4 normal;
+    vec4 uv;
+    vec4 tangent;
+    vec4 bitangent;
+};
+
+struct AABB {
+    vec4 minBounds;
+    vec4 maxBounds;
+};
+
+struct BVHNode {
+    int left;
+    int right;
+    int firstIndex;
+    int triCount;
+};
+
 // -------------------------
 // Flattened BVH nodes (fixed-size arrays)
 // -------------------------
-layout(std430, binding = 0) buffer BVHNodes {
-    vec3 minBounds[MAX_BVH_NODES];
-    vec3 maxBounds[MAX_BVH_NODES];
-    int left[MAX_BVH_NODES];
-    int right[MAX_BVH_NODES];
-    int firstIndex[MAX_BVH_NODES];
-    int triCount[MAX_BVH_NODES];
+layout(std430, binding = 1) buffer BVHNodes {
+    BVHNode bvhNodes[];
 };
 
 // -------------------------
 // Flattened vertices
 // -------------------------
-layout(std430, binding = 1) buffer VertexBuffer {
-    vec3 vertexPositions[MAX_VERTICES];
+layout(std430, binding = 2) buffer VertexBuffer {
+    Vertex vertexData[];
 };
 
 // -------------------------
 // Flattened indices
 // -------------------------
-layout(std430, binding = 2) buffer IndexBuffer {
+layout(std430, binding = 3) buffer IndexBuffer {
     uint indices[MAX_INDICES];
 };
 
 // -------------------------
-// Uniform per-mesh offsets and counts
+// Mesh buffer
 // -------------------------
-uniform int numMeshes;
-uniform int meshVertexOffset[MAX_MESHES];
-uniform int meshIndexOffset[MAX_MESHES];
-uniform int meshBVHOffset[MAX_MESHES];
-uniform int meshBVHNodeCount[MAX_MESHES];
-uniform int meshVertexCount[MAX_MESHES];  // safety check
-uniform int meshIndexCount[MAX_MESHES];   // safety check
+layout(std430, binding = 4) buffer meshBuffer {
+    MeshInfo meshInfo[];
+};
+
+layout(location = 1) uniform int numMeshes;
+
+layout(std430, binding = 5) buffer boundsBuffer {
+    AABB bvhAaBb[];
+};
+
 
 // Camera uniforms
 uniform vec3 uCamPos;
@@ -70,20 +97,29 @@ struct Ray {
 // Möller–Trumbore
 // -------------------------
 bool intersectTriangle(Ray ray, vec3 v0, vec3 v1, vec3 v2, out float t) {
+    const float EPS = 1e-5;
+
     vec3 e1 = v1 - v0;
     vec3 e2 = v2 - v0;
+
     vec3 p = cross(ray.dir, e2);
     float det = dot(e1, p);
-    if (abs(det) < 1e-6) return false;
+
+    if (abs(det) < EPS) return false;
+
     float invDet = 1.0 / det;
+
     vec3 tvec = ray.origin - v0;
     float u = dot(tvec, p) * invDet;
     if (u < 0.0 || u > 1.0) return false;
+
     vec3 q = cross(tvec, e1);
     float v = dot(ray.dir, q) * invDet;
-    if (v < 0.0 || u + v > 1.0) return false;
+    if (v < 0.0 || (u + v) > 1.0) return false;
+
     t = dot(e2, q) * invDet;
-    return t > 0.0;
+
+    return t > EPS;
 }
 
 // -------------------------
@@ -110,17 +146,21 @@ void main() {
 
     vec3 color = vec3(0.1, 0.1, 0.1); // background black
 
+    float closestT = 1e30;   // “infinity”
+    bool hitSomething = false;
+    vec3 hitColor = vec3(0.0);
+
     // -------------------------
     // Loop over meshes and draw vertex points
     // -------------------------
     for (int m = 0; m < numMeshes; ++m) {
-        for (int i = 0; i < meshVertexCount[m]; ++i) {
-            vec3 v = vertexPositions[meshVertexOffset[m] + i];
+        for (int i = 0; i < meshInfo[m].vertexCount; ++i) {
+            vec3 v = vertexData[meshInfo[m].vertexOffset + i].position.xyz;
 
             // Transform vertex into world-space UV coordinates using inverse PV
             vec4 clipPos = uInvPV * vec4(v, 1.0);
-            clipPos /= clipPos.w;                     // perspective divide to NDC [-1,1]
-            vec2 projUV = clipPos.xy * 0.5 + 0.5;    // NDC -> UV [0,1]
+            clipPos /= clipPos.w;                
+            vec2 projUV = clipPos.xy * 0.5 + 0.5;
 
             // If the pixel is close to this projected vertex, color it green
             if (distance(projUV, uv) < 0.005) {
@@ -137,67 +177,82 @@ void main() {
             int localNode = stack[--sp];
             if (localNode < 0) continue;
 
-            int nodeIdx = meshBVHOffset[m] + localNode;
+            int nodeIdx = meshInfo[m].bvhOffset + localNode;
+
+            if (nodeIdx < 0 || nodeIdx >= meshInfo[m].bvhOffset + meshInfo[m].bvhNodeCount) continue;
+
+            vec3 nodeMin = bvhAaBb[nodeIdx].minBounds.xyz; 
+            vec3 nodeMax = bvhAaBb[nodeIdx].maxBounds.xyz;
+
+            int first  = bvhNodes[nodeIdx].firstIndex;
+            int count  = bvhNodes[nodeIdx].triCount;
+            int leftChild  = bvhNodes[nodeIdx].left;
+            int rightChild = bvhNodes[nodeIdx].right;
 
             // -------------------------
-            // Bounds check
-            // -------------------------
-            if (nodeIdx < 0 || nodeIdx >= meshBVHOffset[m] + meshBVHNodeCount[m]) continue;
-
-            vec3 nodeMin = minBounds[nodeIdx];
-            vec3 nodeMax = maxBounds[nodeIdx];
-            int first  = firstIndex[nodeIdx];
-            int count  = triCount[nodeIdx];
-            int leftChild  = left[nodeIdx];
-            int rightChild = right[nodeIdx];
-
-            // -------------------------
-            // AABB intersection (slabs)
+            // AABB intersection (WITH pruning)
             // -------------------------
             vec3 invDir = 1.0 / ray.dir;
             vec3 t0s = (nodeMin - ray.origin) * invDir;
             vec3 t1s = (nodeMax - ray.origin) * invDir;
             vec3 tsmaller = min(t0s, t1s);
             vec3 tbigger  = max(t0s, t1s);
+
             float tmin = max(max(tsmaller.x, tsmaller.y), tsmaller.z);
             float tmax = min(min(tbigger.x, tbigger.y), tbigger.z);
-            if (tmax < max(tmin, 0.0)) continue;
+
+            if (tmax < max(tmin, 0.0) || tmin > closestT) continue;
 
             // -------------------------
-            // Leaf node -> check triangles
+            // Leaf node
             // -------------------------
             if (count > 0) {
                 for (int i = 0; i < count; i++) {
-                    int baseIdx = meshIndexOffset[m] + first + i*3;
-                    if (baseIdx + 2 >= meshIndexOffset[m] + meshIndexCount[m]) continue;
+
+                    int baseIdx = meshInfo[m].indexOffset + (first + i) * 3;
+
+                    if (baseIdx + 2 >= meshInfo[m].indexOffset + meshInfo[m].indexCount) continue;
 
                     uint idx0 = indices[baseIdx + 0];
                     uint idx1 = indices[baseIdx + 1];
                     uint idx2 = indices[baseIdx + 2];
 
-                    // -------------------------
-                    // Vertex bounds check
-                    // -------------------------
-                    if (idx0 >= meshVertexCount[m] || idx1 >= meshVertexCount[m] || idx2 >= meshVertexCount[m]) continue;
+                    if (idx0 >= meshInfo[m].vertexCount ||
+                        idx1 >= meshInfo[m].vertexCount ||
+                        idx2 >= meshInfo[m].vertexCount) continue;
 
-                    vec3 v0 = vertexPositions[meshVertexOffset[m] + idx0];
-                    vec3 v1 = vertexPositions[meshVertexOffset[m] + idx1];
-                    vec3 v2 = vertexPositions[meshVertexOffset[m] + idx2];
+                    vec3 v0 = vertexData[meshInfo[m].vertexOffset + idx0].position.xyz;
+                    vec3 v1 = vertexData[meshInfo[m].vertexOffset + idx1].position.xyz;
+                    vec3 v2 = vertexData[meshInfo[m].vertexOffset + idx2].position.xyz;
 
                     float tHit;
                     if (intersectTriangle(ray, v0, v1, v2, tHit)) {
-                        color = vec3(1.0, 0.5, 0.0); // orange hit
+                        if (tHit < closestT) {
+                            closestT = tHit;
+                            hitSomething = true;
+
+                            // simple shading (can be replaced later)
+                            hitColor = vec3(1.0, 0.5, 0.0);
+                        }
                     }
                 }
-            } else {
+            }
+            else {
                 // -------------------------
-                // Push children (stack overflow safe)
+                // Push children (safe)
                 // -------------------------
-                if (leftChild >= 0 && sp < MAX_STACK_SIZE)  stack[sp++] = leftChild;
-                if (rightChild >= 0 && sp < MAX_STACK_SIZE) stack[sp++] = rightChild;
+                if (leftChild >= 0 && leftChild < meshInfo[m].bvhNodeCount && sp < MAX_STACK_SIZE)
+                    stack[sp++] = leftChild;
+
+                if (rightChild >= 0 && rightChild < meshInfo[m].bvhNodeCount && sp < MAX_STACK_SIZE)
+                    stack[sp++] = rightChild;
             }
         }
     }
-
+    if (hitSomething) {
+        color = hitColor;
+    } else {
+        color = vec3(0.1, 0.1, 0.1);
+    }
     imageStore(img, pixel, vec4(color, 1.0));
 }

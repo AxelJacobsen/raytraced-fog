@@ -35,6 +35,7 @@ Mesh* sphereMesh = new Mesh();
 std::vector<Vertex> allVertices;
 std::vector<uint32_t> allIndices;
 std::vector<BVHNode> allNodes;
+std::vector<AABB> allBounds;
 std::vector<MeshGPU> meshInfos;
 
 
@@ -50,7 +51,7 @@ double mouseSensitivity = 1.0;
 int image_width = 400;
 float aspect_ratio = windowWidth / windowHeight;
 
-bool computeView = true;
+bool computeView = false;
 bool mouseHeld = false;
 
 GLuint tex;
@@ -118,12 +119,14 @@ void initGame(GLFWwindow* window) {
             allIndices.push_back(idx + vertexOffset);
         }
         allNodes.insert(allNodes.end(), scene->bvhs[i].nodes.begin(), scene->bvhs[i].nodes.end());
+        allBounds.insert(allBounds.end(), scene->bvhs[i].bounds.begin(), scene->bvhs[i].bounds.end());
         meshInfos.push_back({
             vertexOffset,
             indexOffset,
             static_cast<int>(scene->meshes[i]->indices.size()),
             nodeOffset,
-            static_cast<int>(scene->bvhs[i].nodes.size())
+            static_cast<int>(scene->bvhs[i].nodes.size()),
+            static_cast<int>(scene->meshes[i]->vertices.size())
             });
 
         vertexOffset += scene->meshes[i]->vertices.size();
@@ -184,7 +187,7 @@ void initGame(GLFWwindow* window) {
         allNodes.size() * sizeof(BVHNode),
         allNodes.data(),
         GL_STATIC_DRAW);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, bvhBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, bvhBuffer);
 
     // Vertex buffer
     GLuint vertexBuffer;
@@ -194,7 +197,7 @@ void initGame(GLFWwindow* window) {
         allVertices.size() * sizeof(Vertex),
         allVertices.data(),
         GL_STATIC_DRAW);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, vertexBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, vertexBuffer);
 
     // Index buffer
     GLuint indexBuffer;
@@ -204,7 +207,7 @@ void initGame(GLFWwindow* window) {
         allIndices.size() * sizeof(uint32_t),
         allIndices.data(),
         GL_STATIC_DRAW);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, indexBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, indexBuffer);
 
     // Mesh info buffer
     GLuint meshBuffer;
@@ -214,7 +217,18 @@ void initGame(GLFWwindow* window) {
         meshInfos.size() * sizeof(MeshGPU),
         meshInfos.data(),
         GL_STATIC_DRAW);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, meshBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, meshBuffer);
+
+    glUniform1i(1, meshInfos.size());
+
+    GLuint boundsBuffer;
+    glGenBuffers(1, &boundsBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, boundsBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+        allBounds.size() * sizeof(AABB),
+        allBounds.data(),
+        GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, boundsBuffer);
 
     // set up vbo for vert data 
     glGenBuffers(1, &vertexBuffer);

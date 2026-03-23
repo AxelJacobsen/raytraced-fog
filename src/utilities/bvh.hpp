@@ -13,10 +13,13 @@
 #include "structs.h"
 #include "mesh.h"
 
+
+//Chat supplied most of this
 class BVH {
 public:
     std::vector<BVHNode> nodes;
     std::vector<Triangle> triangles;
+    std::vector<AABB> bounds;
 
     int build(std::vector<Triangle>& input) {
         triangles = input;
@@ -30,12 +33,12 @@ private:
 
     int buildNode(int start, int count) {
         BVHNode node;
-        AABB bounds;
+        AABB localBounds;
 
         for (int i = start; i < start + count; i++)
-            bounds.expand(triangles[i].bounds);
+            localBounds.expand(triangles[i].bounds);
 
-        node.bounds = bounds;
+        bounds.push_back(localBounds);
 
         int nodeIndex = nodes.size();
         nodes.push_back(node);
@@ -47,7 +50,7 @@ private:
         }
 
         // Choose axis
-        glm::vec3 extent = bounds.max - bounds.min;
+        glm::vec3 extent = localBounds.max - localBounds.min;
         int axis = (extent.x > extent.y && extent.x > extent.z) ? 0 :
             (extent.y > extent.z ? 1 : 2);
 
@@ -55,8 +58,8 @@ private:
         struct Bin { AABB bounds; int count = 0; };
         Bin bins[BIN_COUNT];
 
-        float minC = bounds.min[axis];
-        float maxC = bounds.max[axis];
+        float minC = localBounds.min[axis];
+        float maxC = localBounds.max[axis];
         float scale = BIN_COUNT / (maxC - minC + 1e-5f);
 
         for (int i = start; i < start + count; i++) {

@@ -65,7 +65,6 @@ namespace Fog
             projection = glm::perspective(glm::radians(80.0f), float(windowWidth) / float(windowHeight), 0.1f, 350.f);
             PV = projection * view;
             invPV = glm::inverse(PV);
-            std::cout << pos.x << " " << pos.y << " " << pos.z << std::endl;
         }
 
         void Camera::UpdateCameraPos(GLfloat deltaTime)
@@ -117,8 +116,6 @@ namespace Fog
 
         void handleKeyboardInputs(int key, int action)
         {
-            std::cout << key << std::endl;
-
             // Keep track of pressed/released buttons
             if (key >= 0 && key < 512)
             {

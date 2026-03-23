@@ -5,10 +5,10 @@
 #include <vector>
 
 struct AABB {
-    glm::vec3 min{ FLT_MAX };
-    glm::vec3 max{ -FLT_MAX };
+    glm::vec4 min{ FLT_MAX };
+    glm::vec4 max{ -FLT_MAX };
 
-    void expand(const glm::vec3& p) {
+    void expand(const glm::vec4& p) {
         min = glm::min(min, p);
         max = glm::max(max, p);
     }
@@ -31,8 +31,6 @@ struct Triangle {
 };
 
 struct BVHNode {
-    AABB bounds;
-
     int left = -1;
     int right = -1;
 
@@ -46,6 +44,7 @@ struct MeshGPU {
     int indexCount;
     int bvhOffset;
     int bvhNodeCount;
+    int vertexCount;
 };
 
 #endif

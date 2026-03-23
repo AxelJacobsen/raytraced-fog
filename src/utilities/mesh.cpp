@@ -23,21 +23,21 @@ bool Mesh::loadFromFile(const std::string& path) {
         // Add vertices
         for (unsigned int i = 0; i < mesh->mNumVertices; i++) {
             Vertex v{};
-            v.position = glm::vec3(mesh->mVertices[i].x,
+            v.position = glm::vec4(mesh->mVertices[i].x,
                 mesh->mVertices[i].y,
-                mesh->mVertices[i].z);
-            if (mesh->HasNormals()) v.normal = glm::vec3(mesh->mNormals[i].x,
+                mesh->mVertices[i].z, 0.0);
+            if (mesh->HasNormals()) v.normal = glm::vec4(mesh->mNormals[i].x,
                 mesh->mNormals[i].y,
-                mesh->mNormals[i].z);
-            if (mesh->mTextureCoords[0]) v.uv = glm::vec2(mesh->mTextureCoords[0][i].x,
-                mesh->mTextureCoords[0][i].y);
+                mesh->mNormals[i].z, 0.0);
+            if (mesh->mTextureCoords[0]) v.uv = glm::vec4(mesh->mTextureCoords[0][i].x,
+                mesh->mTextureCoords[0][i].y, 0.0, 0.0);
             if (mesh->HasTangentsAndBitangents()) {
-                v.tangent = glm::vec3(mesh->mTangents[i].x,
+                v.tangent = glm::vec4(mesh->mTangents[i].x,
                     mesh->mTangents[i].y,
-                    mesh->mTangents[i].z);
-                v.bitangent = glm::vec3(mesh->mBitangents[i].x,
+                    mesh->mTangents[i].z, 0.0);
+                v.bitangent = glm::vec4(mesh->mBitangents[i].x,
                     mesh->mBitangents[i].y,
-                    mesh->mBitangents[i].z);
+                    mesh->mBitangents[i].z, 0.0);
             }
             vertices.push_back(v);
         }
@@ -71,9 +71,9 @@ std::vector<Triangle> Mesh::buildTriangles() {
 
         t.centroid = (t.v0 + t.v1 + t.v2) / 3.0f;
 
-        t.bounds.expand(t.v0);
-        t.bounds.expand(t.v1);
-        t.bounds.expand(t.v2);
+        t.bounds.expand(glm::vec4(t.v0, 0.0));
+        t.bounds.expand(glm::vec4(t.v1, 0.0));
+        t.bounds.expand(glm::vec4(t.v2, 0.0));
 
         tris.push_back(t);
     }

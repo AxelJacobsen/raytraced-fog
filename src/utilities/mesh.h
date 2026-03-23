@@ -5,11 +5,11 @@
 #include "structs.h"
 
 struct Vertex {
-    glm::vec3 position;
-    glm::vec3 normal;
-    glm::vec2 uv;
-    glm::vec3 tangent;
-    glm::vec3 bitangent;
+    glm::vec4 position;
+    glm::vec4 normal;
+    glm::vec4 uv;
+    glm::vec4 tangent;
+    glm::vec4 bitangent;
 };
 
 class Mesh {
