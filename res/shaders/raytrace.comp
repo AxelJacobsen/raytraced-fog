@@ -53,6 +53,10 @@ uniform int meshBVHNodeCount[MAX_MESHES];
 uniform int meshVertexCount[MAX_MESHES];  // safety check
 uniform int meshIndexCount[MAX_MESHES];   // safety check
 
+// Camera uniforms
+uniform vec3 uCamPos;
+uniform mat4 uInvPV;
+
 // -------------------------
 // Ray structure
 // -------------------------
@@ -93,29 +97,35 @@ void main() {
     vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
 
     // -------------------------
-    // Simple camera
+    // Compute world-space ray for this pixel
     // -------------------------
-    vec3 camPos = vec3(2, 0, 0);
-    vec3 rayDir = normalize(vec3(uv - 0.5, -1.0));
+    vec2 ndc = uv * 2.0 - 1.0;             // NDC coordinates [-1,1]
+    vec4 clip = vec4(ndc, -1.0, 1.0);      // z = -1 near plane
+    vec4 worldPos = uInvPV * clip;
+    worldPos /= worldPos.w;
 
     Ray ray;
-    ray.origin = camPos;
-    ray.dir = rayDir;
+    ray.origin = uCamPos;
+    ray.dir = normalize(worldPos.xyz - uCamPos);
 
     vec3 color = vec3(0.1, 0.1, 0.1); // background black
 
     // -------------------------
-    // Loop over meshes
+    // Loop over meshes and draw vertex points
     // -------------------------
     for (int m = 0; m < numMeshes; ++m) {
-         // Draw points for vertices
-        for(int i = 0; i < meshVertexCount[m]; i++){
+        for (int i = 0; i < meshVertexCount[m]; ++i) {
             vec3 v = vertexPositions[meshVertexOffset[m] + i];
 
-            // project vertex onto image plane z = 0 (assuming camera at +Z)
-            vec2 proj = v.xy / abs(v.z - camPos.z) * 0.5 + 0.5; // rough projection
+            // Transform vertex into world-space UV coordinates using inverse PV
+            vec4 clipPos = uInvPV * vec4(v, 1.0);
+            clipPos /= clipPos.w;                     // perspective divide to NDC [-1,1]
+            vec2 projUV = clipPos.xy * 0.5 + 0.5;    // NDC -> UV [0,1]
 
-            if(distance(proj, uv) < 0.005) color = vec3(0.0,1.0,0.0); // green point
+            // If the pixel is close to this projected vertex, color it green
+            if (distance(projUV, uv) < 0.005) {
+                color = vec3(0.0, 1.0, 0.0); // green point
+            }
         }
 
         int stack[MAX_STACK_SIZE];

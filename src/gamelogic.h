@@ -8,4 +8,5 @@ void initGame(GLFWwindow* window);
 void updateFrame(GLFWwindow* window);
 void renderFrame(GLFWwindow* window);
 void compute();
-void draw();
+void drawDebug();
+void drawComp();
