@@ -17,11 +17,6 @@ struct AABB {
         expand(b.min);
         expand(b.max);
     }
-
-    float surfaceArea() const {
-        glm::vec3 e = max - min;
-        return 2.0f * (e.x * e.y + e.y * e.z + e.z * e.x);
-    }
 };
 
 struct Triangle {
@@ -31,9 +26,6 @@ struct Triangle {
 };
 
 struct BVHNode {
-    int left = -1;
-    int right = -1;
-
     int firstTri = 0;
     int triCount = 0;
 };

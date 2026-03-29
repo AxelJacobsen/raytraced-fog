@@ -32,6 +32,20 @@ public:
         }
         sceneBvh.build(sceneTriangles);
     }
+    std::vector<BVHNode> getNodes() {
+        std::vector<BVHNode> nodes;
+        int offset = 0;
+        for (size_t i = 0; i < bvhs.size(); i++) {
+            for (size_t o = 0; o < bvhs[i].nodes.size(); o++) {
+                BVHNode tempNode;
+                tempNode.firstTri = offset;
+                tempNode.triCount = bvhs[i].nodes[o].triCount;
+                offset += tempNode.triCount;
+                nodes.push_back(tempNode);
+            }
+        }
+        return nodes;
+    }
 };
 
 #endif

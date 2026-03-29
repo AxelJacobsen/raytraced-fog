@@ -104,8 +104,9 @@ void initGame(GLFWwindow* window) {
         std::cout << "Error in loading sphere" << std::endl;
     };
 
-    scene->meshes.push_back(torusMesh);
+
     scene->meshes.push_back(sphereMesh);
+    scene->meshes.push_back(torusMesh);
     scene->build();
 
     int vertexOffset = 0;
@@ -118,7 +119,6 @@ void initGame(GLFWwindow* window) {
         for (auto idx : scene->meshes[i]->indices) {
             allIndices.push_back(idx + vertexOffset);
         }
-        allNodes.insert(allNodes.end(), scene->bvhs[i].nodes.begin(), scene->bvhs[i].nodes.end());
         allBounds.insert(allBounds.end(), scene->bvhs[i].bounds.begin(), scene->bvhs[i].bounds.end());
         meshInfos.push_back({
             vertexOffset,
@@ -133,6 +133,8 @@ void initGame(GLFWwindow* window) {
         indexOffset += scene->meshes[i]->indices.size();
         nodeOffset += scene->bvhs[i].nodes.size();
     }
+    std::vector<BVHNode> nodes = scene->getNodes();
+    allNodes.insert(allNodes.end(), nodes.begin(), nodes.end());
 
     // -------------------------
     // 1. Generate screen texture for compute output
