@@ -31,13 +31,14 @@ Scene* scene = new Scene();
 
 Mesh* torusMesh = new Mesh();
 Mesh* sphereMesh = new Mesh();
+Mesh* mapMesh = new Mesh();
+Mesh* supportMesh = new Mesh();
+Mesh* lampMesh = new Mesh();
 
 std::vector<Vertex> allVertices;
 std::vector<uint32_t> allIndices;
 std::vector<BVHNode> allNodes;
 std::vector<AABB> allBounds;
-std::vector<MeshGPU> meshInfos;
-
 
 const float debug_startTime = 0;
 double totalElapsedTime = debug_startTime;
@@ -96,17 +97,36 @@ void initGame(GLFWwindow* window) {
     debugShader = new Fog::Shader();
     debugShader->makeBasicShader("../res/shaders/debug.vert", "../res/shaders/debug.frag");
 
+    scene->lights.push_back({glm::vec4(-20.0,4.0,0.0,0.0), glm::vec4(0.65,0.5,0.0,15.0)});
+    scene->lights.push_back({glm::vec4(0.0,5.0,0.0,0.0), glm::vec4(0.0,0.0,1.0,15.0)});
+
+    /*
     if (!torusMesh->loadFromFile("../res/models/torus.fbx")) {
         std::cout << "Error in loading torus" << std::endl;
     };
 
     if (!sphereMesh->loadFromFile("../res/models/sphere.fbx")) {
         std::cout << "Error in loading sphere" << std::endl;
+    };*/
+
+    if (!mapMesh->loadFromFile("../res/models/mine.glb")) {
+        std::cout << "Error in loading map" << std::endl;
+    };    
+    
+    if (!supportMesh->loadFromFile("../res/models/mineSupport.glb")) {
+        std::cout << "Error in loading support" << std::endl;
+    };    
+    
+    if (!lampMesh->loadFromFile("../res/models/mineLamp.glb")) {
+        std::cout << "Error in loading lamp" << std::endl;
     };
 
 
-    scene->meshes.push_back(sphereMesh);
-    scene->meshes.push_back(torusMesh);
+    //scene->meshes.push_back(sphereMesh);
+    //scene->meshes.push_back(torusMesh);
+    scene->meshes.push_back(mapMesh);
+    scene->meshes.push_back(supportMesh);
+    scene->meshes.push_back(lampMesh);
     scene->build();
 
     int vertexOffset = 0;
@@ -120,21 +140,11 @@ void initGame(GLFWwindow* window) {
             allIndices.push_back(idx + vertexOffset);
         }
         allBounds.insert(allBounds.end(), scene->bvhs[i].bounds.begin(), scene->bvhs[i].bounds.end());
-        meshInfos.push_back({
-            vertexOffset,
-            indexOffset,
-            static_cast<int>(scene->meshes[i]->indices.size()),
-            nodeOffset,
-            static_cast<int>(scene->bvhs[i].nodes.size()),
-            static_cast<int>(scene->meshes[i]->vertices.size())
-            });
 
         vertexOffset += scene->meshes[i]->vertices.size();
         indexOffset += scene->meshes[i]->indices.size();
         nodeOffset += scene->bvhs[i].nodes.size();
     }
-    std::vector<BVHNode> nodes = scene->getNodes();
-    allNodes.insert(allNodes.end(), nodes.begin(), nodes.end());
 
     // -------------------------
     // 1. Generate screen texture for compute output
@@ -145,7 +155,7 @@ void initGame(GLFWwindow* window) {
         GL_RGBA, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glBindTexture(GL_TEXTURE_2D, 0); // unbind for safety
+    glBindTexture(GL_TEXTURE_2D, 0);
 
     // -------------------------
     // 2. Setup full-screen quad VAO/VBO
@@ -186,8 +196,8 @@ void initGame(GLFWwindow* window) {
     glGenBuffers(1, &bvhBuffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, bvhBuffer);
     glBufferData(GL_SHADER_STORAGE_BUFFER,
-        allNodes.size() * sizeof(BVHNode),
-        allNodes.data(),
+        scene->getNodes().size() * sizeof(BVHNode),
+        scene->getNodes().data(),
         GL_STATIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, bvhBuffer);
 
@@ -211,18 +221,6 @@ void initGame(GLFWwindow* window) {
         GL_STATIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, indexBuffer);
 
-    // Mesh info buffer
-    GLuint meshBuffer;
-    glGenBuffers(1, &meshBuffer);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, meshBuffer);
-    glBufferData(GL_SHADER_STORAGE_BUFFER,
-        meshInfos.size() * sizeof(MeshGPU),
-        meshInfos.data(),
-        GL_STATIC_DRAW);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, meshBuffer);
-
-    glUniform1i(1, meshInfos.size());
-
     GLuint boundsBuffer;
     glGenBuffers(1, &boundsBuffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, boundsBuffer);
@@ -230,15 +228,29 @@ void initGame(GLFWwindow* window) {
         allBounds.size() * sizeof(AABB),
         allBounds.data(),
         GL_STATIC_DRAW);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, boundsBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, boundsBuffer);
+    
+    GLuint lightBuffer;
+    glGenBuffers(1, &lightBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, lightBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+        scene->lights.size() * sizeof(Light),
+        scene->lights.data(),
+        GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, lightBuffer);
 
+    scene->generateTextureArray();
+    glBindTextureUnit(6, scene->texId);
+
+    glUniform1i(1, scene->meshes.size());
+    glUniform1i(2, scene->lights.size());
+    
     // set up vbo for vert data 
     glGenBuffers(1, &vertexBuffer);
     glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
     glBufferData(GL_ARRAY_BUFFER, allVertices.size() * sizeof(Vertex), allVertices.data(), GL_STATIC_DRAW);
 
     // Set up ebo for debug
-    // Raster index buffer (EBO)
     GLuint ebo;
     glGenBuffers(1, &ebo);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);

@@ -1,7 +1,12 @@
+#define STB_IMAGE_IMPLEMENTATION
 #include "Mesh.h"
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
+#include "stb_image.h"
+#include "iostream"
 
 bool Mesh::loadFromFile(const std::string& path) {
     Assimp::Importer importer;
@@ -10,17 +15,16 @@ bool Mesh::loadFromFile(const std::string& path) {
         aiProcess_Triangulate |
         aiProcess_GenNormals |
         aiProcess_CalcTangentSpace |
-        aiProcess_JoinIdenticalVertices);
+        aiProcess_JoinIdenticalVertices |
+        aiProcess_FlipUVs);
 
     if (!scene || !scene->HasMeshes()) return false;
-
 
     for (unsigned int m = 0; m < scene->mNumMeshes; m++) {
         aiMesh* mesh = scene->mMeshes[m];
 
         unsigned int vertexOffset = 0;
 
-        // Add vertices
         for (unsigned int i = 0; i < mesh->mNumVertices; i++) {
             Vertex v{};
             v.position = glm::vec4(mesh->mVertices[i].x,
@@ -49,8 +53,49 @@ bool Mesh::loadFromFile(const std::string& path) {
                 indices.push_back(face.mIndices[j] + vertexOffset);
             }
         }
-    }
 
+        // texture CONSIDER ADDING MORE, LIKE NORMALMAP
+        aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
+        aiString str;
+
+        if (material->GetTexture(aiTextureType_DIFFUSE, 0, &str) == AI_SUCCESS) {
+
+            int index = std::atoi(str.C_Str() + 1);
+            aiTexture* tex = scene->mTextures[index];
+
+            Texture texture;
+
+            if (tex->mHeight == 0) {
+                unsigned char* imgData = stbi_load_from_memory(
+                    reinterpret_cast<unsigned char*>(tex->pcData),
+                    tex->mWidth,
+                    &texture.width,
+                    &texture.height,
+                    &texture.channels,
+                    4
+                );
+
+                texture.channels = 4;
+
+                size_t size = texture.width * texture.height * 4;
+                texture.data.assign(imgData, imgData + size);
+
+                stbi_image_free(imgData);
+            }
+            else {
+                texture.width = tex->mWidth;
+                texture.height = tex->mHeight;
+                texture.channels = 4;
+
+                size_t size = texture.width * texture.height * 4;
+                texture.data.resize(size);
+
+                memcpy(texture.data.data(), tex->pcData, size);
+            }
+
+            textures.push_back(texture);
+        }
+    }
     return true;
 }
 

@@ -17,7 +17,7 @@ void runProgram(GLFWwindow* window)
     glDepthFunc(GL_LESS);
 
     // Configure miscellaneous OpenGL settings
-    glEnable(GL_CULL_FACE);
+    //glEnable(GL_CULL_FACE);
 
     // Disable built-in dithering
     glDisable(GL_DITHER);

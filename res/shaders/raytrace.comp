@@ -1,30 +1,23 @@
 #version 430 core
 
 layout(local_size_x = 16, local_size_y = 16) in;
-
-// -------------------------
-// Output image
-// -------------------------
 layout(rgba32f, binding = 0) uniform image2D img;
 
-// -------------------------
 // Constants
-// -------------------------
 #define MAX_MESHES 8
+#define MAX_LIGHTS 16
 
-struct MeshInfo {
-    int vertexOffset;
-    int indexOffset;
-    int indexCount;
-    int bvhOffset;
-    int bvhNodeCount;
-    int vertexCount;
-};
+// Suggestion taken from 
+// https://github.com/wsandst/gpu-raytracer/blob/master/src/shaders/pathtracer.comp
+#define DO_REFLECTION 1
+#define DO_REFRACTION 0
+#define DO_SHADOWS 1
 
+//Structs
 struct Vertex {
     vec4 position;
     vec4 normal;
-    vec4 uv;
+    vec4 uv; //Transparency on z & reflectivity on a
     vec4 tangent;
     vec4 bitangent;
 };
@@ -37,6 +30,7 @@ struct AABB {
 struct BVHNode {
     int firstIndex;
     int triCount;
+    int texId;
 };
 
 struct Ray {
@@ -45,61 +39,70 @@ struct Ray {
 };
 
 struct Hit {
+    bool hit;
+    float t;
+    vec3 pos;
+    vec3 normal;
+    vec2 uv;
+    float transparency;
+    float reflection;
+    int meshId;
+};
+
+struct Light {
+    vec4 pos;
     vec4 color;
-    float distance;
-    bool hasHit;
 };
 
-struct BVHHit {
-    MeshInfo meshes[MAX_MESHES];
-    float distance[MAX_MESHES];
+struct Material {
+    vec3 albedo;
 };
 
-
-// -------------------------
 // Flattened BVH nodes
-// -------------------------
 layout(std430, binding = 1) buffer BVHNodes {
     BVHNode bvhNodes[];
 };
 
-// -------------------------
 // Flattened vertices
-// -------------------------
 layout(std430, binding = 2) buffer VertexBuffer {
     Vertex vertexData[];
 };
 
-// -------------------------
 // Flattened indices
-// -------------------------
 layout(std430, binding = 3) buffer IndexBuffer {
     uint indices[];
 };
 
-// -------------------------
-// Mesh buffer
-// -------------------------
-layout(std430, binding = 4) buffer meshBuffer {
-    MeshInfo meshInfo[];
-};
-
-
-layout(std430, binding = 5) buffer boundsBuffer {
+// Bounds buffer
+layout(std430, binding = 4) buffer boundsBuffer {
     AABB bvhAaBb[];
 };
+
+// Lighting
+layout(std430, binding = 5) buffer lightBuffer {
+    Light lights[];
+};
+
+layout(binding = 6) uniform sampler2DArray texArray;
+
 
 
 // Uniforms
 layout(location = 1) uniform int numMeshes;
+layout(location = 2) uniform int numLights;
 uniform vec3 uCamPos;
 uniform mat4 uInvPV;
 
-// -------------------------
+Ray makeRay(vec3 origin, vec3 dir) {
+    Ray r;
+    r.origin = origin;
+    r.dir = normalize(dir);
+    return r;
+};
+
 // Ray-triangle intersection
 // Moller–Trumbore
-// -------------------------
-bool intersectTriangle(Ray ray, vec3 v0, vec3 v1, vec3 v2, out float t) {
+bool intersectTriangle(Ray ray, vec3 v0, vec3 v1, vec3 v2, out float t, out vec3 bary) {
     const float EPS = 1e-5;
 
     vec3 e1 = v1 - v0;
@@ -121,100 +124,371 @@ bool intersectTriangle(Ray ray, vec3 v0, vec3 v1, vec3 v2, out float t) {
     if (v < 0.0 || (u + v) > 1.0) return false;
 
     t = dot(e2, q) * invDet;
+    bary = vec3(1.0 - u - v, u, v);
 
     return t > EPS;
+};
+
+bool intersectLightSphere(Ray ray, vec3 center, float radius, out float t)
+{
+    vec3 oc = ray.origin - center;
+
+    float a = dot(ray.dir, ray.dir);
+    float b = 2.0 * dot(oc, ray.dir);
+    float c = dot(oc, oc) - radius * radius;
+
+    float discriminant = b * b - 4.0 * a * c;
+    if (discriminant < 0.0) return false;
+
+    float s = sqrt(discriminant);
+    float t0 = (-b - s) / (2.0 * a);
+    float t1 = (-b + s) / (2.0 * a);
+
+    t = (t0 > 0.001) ? t0 : t1;
+    return t > 0.001;
+};
+
+float getRoughness(vec3 albedo)
+{
+    return clamp(1.0 - length(albedo), 0.2, 0.9);
 }
 
-// -------------------------
-// Main
-// -------------------------
-void main() {
-    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(img);
-    if (pixel.x >= size.x || pixel.y >= size.y) return;
+vec3 getTexture(Hit hit)
+{
+    vec3 tex = texture(
+        texArray,
+        vec3(hit.uv, bvhNodes[hit.meshId].texId)
+    ).rgb;
 
-    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    //if (dot(tex, tex) < 0.0001)
+    //    tex = vec3(0.6, 0.6, 0.65);
 
-    // -------------------------
-    // Compute world-space ray for this pixel
-    // -------------------------
-    vec2 ndc = uv * 2.0 - 1.0;            
-    vec4 clip = vec4(ndc, -1.0, 1.0);     
-    vec4 worldPos = uInvPV * clip;
-    worldPos /= worldPos.w;
+    return tex;
+}
 
-    // Init Ray
-    Ray ray;
-    ray.origin = uCamPos;
-    ray.dir = normalize(worldPos.xyz - uCamPos);
+vec3 applyBloom(vec3 color)
+{
+    float brightness = max(color.r, max(color.g, color.b));
+    float bloomFactor = smoothstep(1.0, 2.5, brightness);
+    return color * bloomFactor * 1.5;
+}
 
-    //Init hit struct
-    Hit hitDat;
-    hitDat.color = vec4(0.1,0.1,0.1, 1.0);
-    hitDat.distance = 1e30;
-    hitDat.hasHit = false;
+vec3 applyFogAlongRay(vec3 origin, vec3 dir, float dist, vec3 currentColor)
+{
+    float density = 0.06;
+
+    float transmittance = exp(-density * dist);
+
+    vec3 fogColor = vec3(0.12, 0.11, 0.10);
+
+    vec3 scatter = vec3(0.0);
+
+    vec3 samplePos = origin + dir * (dist * 0.5);
+
+    for (int i = 0; i < numLights; i++)
+    {
+        vec3 Lvec = lights[i].pos.xyz - samplePos;
+        float d = length(Lvec);
+        vec3 L = Lvec / d;
+
+        float phase = max(dot(dir, L), 0.0);
+
+        float atten = lights[i].color.a /
+            (1.0 + 0.3 * d + 0.1 * d * d);
+
+        scatter += lights[i].color.rgb * phase * atten;
+    }
+
+    scatter *= density * dist;
+
+    vec3 finalFog = fogColor + scatter;
+
+    return currentColor * transmittance +
+        finalFog * (1.0 - transmittance);
+}
+
+vec4 computeLighting(vec3 pos, vec3 normal, vec3 viewDir, vec3 albedo) {
+    vec4 outLight = vec4(0.0);
+    vec4 lightValues[MAX_LIGHTS];
+    float dist[MAX_LIGHTS];
+    float distSum = 0.0;
+    for (int l = 0; l < numLights; l++) {
+        vec3 lightDir = normalize(lights[l].pos.xyz - pos);
+
+        float diff = max(dot(normal, lightDir), 0.05);
+        diff = pow(diff, 1.5);
+
+        vec3 reflectDir = reflect(-lightDir, normal);
+        float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
+
+        vec3 diffuse = diff * albedo * lights[l].color.xyz;
+        vec3 specular = spec * lights[l].color.xyz;
+
+        lightValues[l] = vec4(diffuse + specular, 1.0);
+        dist[l] = distance(lights[l].pos.xyz, pos);
+        distSum += dist[l];
+    }
+    for (int w = 0; w < numLights; w++) {
+        float ratio = dist[w] / distSum;
+        outLight += lightValues[w] * ratio;
+    }
+    return outLight;
+};
+// partially used this: https://tavianator.com/2011/ray_box.html
+bool intersectAABB(Ray ray, vec3 bmin, vec3 bmax, out float tminOut, out float tmaxOut)
+{
+    vec3 invDir = 1.0 / ray.dir;
+
+    vec3 t0 = (bmin - ray.origin) * invDir;
+    vec3 t1 = (bmax - ray.origin) * invDir;
+
+    vec3 tsmaller = min(t0, t1);
+    vec3 tbigger = max(t0, t1);
+
+    float tmin = max(max(tsmaller.x, tsmaller.y), tsmaller.z);
+    float tmax = min(min(tbigger.x, tbigger.y), tbigger.z);
+
+    tminOut = tmin;
+    tmaxOut = tmax;
+
+    return tmax >= max(tmin, 0.0);
+};
 
 
-    // -------------------------
-    // Loop over meshes and draw vertex points
-    // -------------------------
-    int totVertex = 0;
-    for (int m = 0; m < numMeshes; ++m) {
+Hit traceScene(Ray ray)
+{
+    Hit hit;
+    hit.hit = false;
+    hit.t = 1e30;
+    hit.meshId = -1;
 
-        vec3 nodeMin = bvhAaBb[m].minBounds.xyz;
-        vec3 nodeMax = bvhAaBb[m].maxBounds.xyz;
+    for (int m = 0; m < numMeshes; m++)
+    {
+        vec3 bmin = bvhAaBb[m].minBounds.xyz;
+        vec3 bmax = bvhAaBb[m].maxBounds.xyz;
+
+        float tmin, tmax;
+        if (!intersectAABB(ray, bmin, bmax, tmin, tmax))
+            continue;
 
         int first = bvhNodes[m].firstIndex;
         int count = bvhNodes[m].triCount;
-        totVertex += meshInfo[m].vertexCount;
-        
-        // -------------------------
-        // AABB intersection
-        // -------------------------
-        vec3 invDir = 1.0 / ray.dir;
-        vec3 t0s = (nodeMin - ray.origin) * invDir;
-        vec3 t1s = (nodeMax - ray.origin) * invDir;
-        vec3 tsmaller = min(t0s, t1s);
-        vec3 tbigger = max(t0s, t1s);
 
-        float tmin = max(max(tsmaller.x, tsmaller.y), tsmaller.z);
-        float tmax = min(min(tbigger.x, tbigger.y), tbigger.z);
+        for (int i = 0; i < count; i++)
+        {
+            int baseIdx = (first + i) * 3;
 
-        //culling
-        if (tmax < max(tmin, 0.0) || tmin > hitDat.distance) continue;
+            uint i0 = indices[baseIdx + 0];
+            uint i1 = indices[baseIdx + 1];
+            uint i2 = indices[baseIdx + 2];
 
-        if (count > 0) {
-            for (int i = 0; i < count; i++) {
+            vec3 v0 = vertexData[i0].position.xyz;
+            vec3 v1 = vertexData[i1].position.xyz;
+            vec3 v2 = vertexData[i2].position.xyz;
 
-                int baseIdx = (first + i) * 3 ;
+            float t;
+            vec3 bary;
 
-                uint idx0 = indices[baseIdx + 0];
-                uint idx1 = indices[baseIdx + 1];
-                uint idx2 = indices[baseIdx + 2];
+            if (intersectTriangle(ray, v0, v1, v2, t, bary))
+            {
+                if (t < hit.t)
+                {
+                    hit.hit = true;
+                    hit.t = t;
+                    hit.meshId = m;
 
-                vec3 v0 = vertexData[idx0].position.xyz;
-                vec3 v1 = vertexData[idx1].position.xyz;
-                vec3 v2 = vertexData[idx2].position.xyz;
+                    hit.pos = ray.origin + ray.dir * t;
 
-                float tHit;
-                if (intersectTriangle(ray, v0, v1, v2, tHit)) {
-                    if (tHit < hitDat.distance) {
-                        hitDat.distance = tHit;
-                        hitDat.hasHit = true;
+                    vec3 n0 = vertexData[i0].normal.xyz;
+                    vec3 n1 = vertexData[i1].normal.xyz;
+                    vec3 n2 = vertexData[i2].normal.xyz;
 
-                        hitDat.color = vec4(
-                            vertexData[idx0].uv.x,
-                            vertexData[idx1].uv.x,
-                            vertexData[idx2].uv.x,
-                            1.0
-                        );
-                    }
+                    hit.normal = normalize(n0 * bary.x + n1 * bary.y + n2 * bary.z);
+
+                    vec2 uv0 = vertexData[i0].uv.xy;
+                    vec2 uv1 = vertexData[i1].uv.xy;
+                    vec2 uv2 = vertexData[i2].uv.xy;
+
+                    hit.uv = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
                 }
             }
         }
     }
-    if (!hitDat.hasHit) {
-        hitDat.color = vec4(0.1, 0.1, 0.1, 1.0);
+    const float lightRadius = 0.12;
+
+    for (int i = 0; i < numLights; i++)
+    {
+        float tLight;
+
+        if (intersectLightSphere(ray, lights[i].pos.xyz, lightRadius, tLight))
+        {
+            if (tLight < hit.t)
+            {
+                hit.hit = true;
+                hit.t = tLight;
+
+                hit.meshId = -2;
+
+                hit.pos = ray.origin + ray.dir * tLight;
+                hit.normal = normalize(hit.pos - lights[i].pos.xyz);
+            }
+        }
     }
-    imageStore(img, pixel, hitDat.color);
+
+    return hit;
+}
+
+bool isInShadow(vec3 pos, vec3 lightPos)
+{
+    vec3 dir = lightPos - pos;
+    float maxDist = length(dir);
+    dir /= maxDist;
+
+    Ray shadowRay;
+    shadowRay.origin = pos + dir * 0.001;
+    shadowRay.dir = dir;
+
+    Hit h = traceScene(shadowRay);
+
+    return (h.hit && h.t < maxDist);
+};
+
+vec3 computeDirectLighting(vec3 pos, vec3 normal, vec3 viewDir, vec3 albedo)
+{
+    vec3 result = vec3(0.0);
+
+    float roughness = getRoughness(albedo);
+    float specPower = mix(64.0, 8.0, roughness);
+
+    for (int i = 0; i < numLights; i++)
+    {
+        vec3 Lvec = lights[i].pos.xyz - pos;
+        float d = length(Lvec);
+        vec3 L = Lvec / d;
+
+        //Check shadow
+        if (isInShadow(pos, lights[i].pos.xyz))
+            continue;
+
+        float ndotl = max(dot(normal, L), 0.1);
+
+        float atten = lights[i].color.a /
+            (1.0 + 0.3 * d + 0.1 * d * d);
+
+        vec3 lightCol = lights[i].color.rgb * atten;
+
+        vec3 diffuse = albedo * ndotl;
+
+        vec3 R = reflect(-L, normal);
+        float spec = pow(max(dot(viewDir, R), 0.0), specPower);
+        spec *= mix(0.02, 1.0, 1.0 - roughness);
+
+        vec3 specular = lightCol * spec;
+
+        result += lightCol * diffuse + specular;
+    }
+
+    return result;
+}
+vec3 traceRay(Ray ray)
+{
+    vec3 color = vec3(0.0);
+    vec3 throughput = vec3(1.0);
+
+    const int MAX_BOUNCES = 4;
+
+    for (int b = 0; b < MAX_BOUNCES; b++)
+    {
+        Hit hit = traceScene(ray);
+
+        if (!hit.hit)
+        {
+            color += throughput * vec3(0.03);
+            break;
+        }
+
+        float dist = hit.t;
+
+        vec3 albedo_textured = getTexture(hit);
+        color += throughput * albedo_textured * 0.4 ;
+
+        albedo_textured = min(albedo_textured, vec3(0.85));
+
+        if (hit.meshId == -2)
+        {
+            vec3 emission = vec3(0.0);
+
+            for (int i = 0; i < numLights; i++)
+            {
+                if (length(hit.pos - lights[i].pos.xyz) < 0.25)
+                {
+                    emission = lights[i].color.rgb *
+                        lights[i].color.a * 6.0;
+                }
+            }
+
+            color += throughput * emission;
+            break;
+        }
+
+        vec3 viewDir = normalize(-ray.dir);
+
+        vec3 direct = computeDirectLighting(
+            hit.pos,
+            hit.normal,
+            viewDir,
+            albedo_textured
+        );
+
+
+        float reflectivity = 0.08;
+        float diffuseWeight = 1.0 - reflectivity;
+
+        vec3 surfaceColor = diffuseWeight * direct;
+
+        surfaceColor = applyFogAlongRay(
+            ray.origin,
+            ray.dir,
+            dist,
+            surfaceColor
+        );
+
+        color += throughput * surfaceColor;
+
+        throughput *= reflectivity;
+
+        ray.origin = hit.pos + hit.normal * 0.002;
+        if (DO_REFLECTION == 1 && hit.reflection > 0.05) {
+            ray.dir = reflect(ray.dir, hit.normal);
+        }
+        if (DO_REFRACTION == 1 && hit.transparency > 0.05) {
+            // REFRACITON STUFF
+        }
+    }
+
+    return color;
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(img);
+
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec2 ndc = uv * 2.0 - 1.0;
+
+    vec4 clip = vec4(ndc, -1.0, 1.0);
+    vec4 world = uInvPV * clip;
+    world /= world.w;
+
+    Ray ray;
+    ray.origin = uCamPos;
+    ray.dir = normalize(world.xyz - uCamPos);
+
+    vec3 col = traceRay(ray);
+
+    imageStore(img, pixel, vec4(col, 1.0));
 }

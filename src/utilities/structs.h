@@ -28,6 +28,7 @@ struct Triangle {
 struct BVHNode {
     int firstTri = 0;
     int triCount = 0;
+    int texId = -1; 
 };
 
 struct MeshGPU {
@@ -35,8 +36,22 @@ struct MeshGPU {
     int indexOffset;
     int indexCount;
     int bvhOffset;
+
     int bvhNodeCount;
     int vertexCount;
+    int textId;
+    int test;
+};
+
+struct Texture {
+    int width, height, channels;
+    std::vector<unsigned char> data;
+    std::string path;
+};
+
+struct Light {
+    glm::vec4 pos;
+    glm::vec4 color;
 };
 
 #endif
