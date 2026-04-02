@@ -166,6 +166,9 @@ vec3 RayAt(Ray r, float t)
     return r.origin + r.dir * t;
 }
 
+vec3 reject(vec3 from, vec3 onto) {
+    return from - onto * dot(from, onto) / dot(onto, onto);
+}
 
 vec3 getTexture(Hit hit)
 {
@@ -317,12 +320,14 @@ Hit traceScene(Ray ray)
         }
     }
 
-    const float lightRadius = 0.12;
+    // prevent light through wall
+    if (hit.hit) { hit.pos -= normalize(ray.dir); };
+
+    const float lightRadius = 1.5;
 
     for (int i = 0; i < numLights; i++)
     {
         float tLight;
-
         if (intersectLightSphere(ray, lights[i].pos.xyz, lightRadius, tLight))
         {
             if (tLight < hit.t)
@@ -443,7 +448,7 @@ vec3 traceRay(Ray ray)
 
             for (int i = 0; i < numLights; i++)
             {
-                if (length(hit.pos - lights[i].pos.xyz) < 0.25)
+                if (length(hit.pos - lights[i].pos.xyz) < 2.25)
                 {
                     emission = lights[i].color.rgb *
                         lights[i].color.a * 3.0;
