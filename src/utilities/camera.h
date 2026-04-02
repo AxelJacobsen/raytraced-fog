@@ -36,7 +36,7 @@ namespace Fog
         glm::mat4 projection;
         glm::mat4 PV;
         glm::mat4 invPV;
-
+        int frame = 0;
 
         float focal_length = 1.0;
         
@@ -65,6 +65,7 @@ namespace Fog
             projection = glm::perspective(glm::radians(80.0f), float(windowWidth) / float(windowHeight), 0.1f, 350.f);
             PV = projection * view;
             invPV = glm::inverse(PV);
+            frame = 0;
         }
 
         void Camera::UpdateCameraPos(GLfloat deltaTime)
@@ -135,7 +136,7 @@ namespace Fog
         GLfloat fYaw = 0.0f;
         GLfloat lastXPos = 0.0f;
         GLfloat lastYPos = 0.0f;
-        GLfloat cMovementSpeed = 0.5;
+        GLfloat cMovementSpeed = 2.5;
         GLfloat cMouseSensitivity;
         GLboolean keysInUse[512];
 

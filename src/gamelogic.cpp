@@ -50,6 +50,7 @@ double lastMouseY = windowHeight / 2;
 double mouseSensitivity = 1.0;
 
 int image_width = 400;
+int frame = 0;
 float aspect_ratio = windowWidth / windowHeight;
 
 bool computeView = false;
@@ -97,8 +98,8 @@ void initGame(GLFWwindow* window) {
     debugShader = new Fog::Shader();
     debugShader->makeBasicShader("../res/shaders/debug.vert", "../res/shaders/debug.frag");
 
-    scene->lights.push_back({glm::vec4(-20.0,4.0,0.0,0.0), glm::vec4(0.65,0.5,0.0,15.0)});
-    scene->lights.push_back({glm::vec4(0.0,5.0,0.0,0.0), glm::vec4(0.0,0.0,1.0,15.0)});
+    scene->lights.push_back({glm::vec4(-20.0,4.0,0.0,0.0), glm::vec4(0.65,0.5,0.0, 2.0)});
+    scene->lights.push_back({glm::vec4(0.0,5.0,0.0,0.0), glm::vec4(0.0,0.0,1.0, 2.0)});
 
     /*
     if (!torusMesh->loadFromFile("../res/models/torus.fbx")) {
@@ -127,6 +128,9 @@ void initGame(GLFWwindow* window) {
     scene->meshes.push_back(mapMesh);
     scene->meshes.push_back(supportMesh);
     scene->meshes.push_back(lampMesh);
+    scene->generateTextureArray(0);
+    scene->generateTextureArray(1);
+
     scene->build();
 
     int vertexOffset = 0;
@@ -239,8 +243,8 @@ void initGame(GLFWwindow* window) {
         GL_STATIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, lightBuffer);
 
-    scene->generateTextureArray();
     glBindTextureUnit(6, scene->texId);
+    glBindTextureUnit(7, scene->normalTexId);
 
     glUniform1i(1, scene->meshes.size());
     glUniform1i(2, scene->lights.size());
@@ -303,6 +307,9 @@ void compute() {
     glBindImageTexture(0, tex, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
     glUniform3fv(glGetUniformLocation(compShader->get(), "uCamPos"), 1, &camera->pos[0]);
     glUniformMatrix4fv(glGetUniformLocation(compShader->get(), "uInvPV"), 1, GL_FALSE, &camera->invPV[0][0]);
+
+    glUniform1i(3, camera->frame);
+    camera->frame++;
 
     glDispatchCompute(
         (GLuint)(windowWidth / 16 + 1),

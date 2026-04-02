@@ -8,6 +8,44 @@
 #include "stb_image.h"
 #include "iostream"
 
+void Mesh::loadInTexture(aiTexture* tex, int index) {
+    Texture texture;
+
+    if (tex->mHeight == 0) {
+        unsigned char* imgData = stbi_load_from_memory(
+            reinterpret_cast<unsigned char*>(tex->pcData),
+            tex->mWidth,
+            &texture.width,
+            &texture.height,
+            &texture.channels,
+            4
+        );
+
+        texture.channels = 4;
+
+        size_t size = texture.width * texture.height * 4;
+        texture.data.assign(imgData, imgData + size);
+
+        stbi_image_free(imgData);
+    }
+    else {
+        texture.width = tex->mWidth;
+        texture.height = tex->mHeight;
+        texture.channels = 4;
+
+        size_t size = texture.width * texture.height * 4;
+        texture.data.resize(size);
+
+        memcpy(texture.data.data(), tex->pcData, size);
+    }
+    if (index == 0) {
+        textures.push_back(texture);
+    }
+    else if (index == 1) {
+        normals.push_back(texture);
+    }
+};
+
 bool Mesh::loadFromFile(const std::string& path) {
     Assimp::Importer importer;
 
@@ -59,41 +97,14 @@ bool Mesh::loadFromFile(const std::string& path) {
         aiString str;
 
         if (material->GetTexture(aiTextureType_DIFFUSE, 0, &str) == AI_SUCCESS) {
-
             int index = std::atoi(str.C_Str() + 1);
             aiTexture* tex = scene->mTextures[index];
-
-            Texture texture;
-
-            if (tex->mHeight == 0) {
-                unsigned char* imgData = stbi_load_from_memory(
-                    reinterpret_cast<unsigned char*>(tex->pcData),
-                    tex->mWidth,
-                    &texture.width,
-                    &texture.height,
-                    &texture.channels,
-                    4
-                );
-
-                texture.channels = 4;
-
-                size_t size = texture.width * texture.height * 4;
-                texture.data.assign(imgData, imgData + size);
-
-                stbi_image_free(imgData);
-            }
-            else {
-                texture.width = tex->mWidth;
-                texture.height = tex->mHeight;
-                texture.channels = 4;
-
-                size_t size = texture.width * texture.height * 4;
-                texture.data.resize(size);
-
-                memcpy(texture.data.data(), tex->pcData, size);
-            }
-
-            textures.push_back(texture);
+            loadInTexture(tex, 0);
+        }
+        if (material->GetTexture(aiTextureType_NORMALS, 0, &str) == AI_SUCCESS) {
+            int index = std::atoi(str.C_Str() + 1);
+            aiTexture* tex = scene->mTextures[index];
+            loadInTexture(tex, 1);
         }
     }
     return true;

@@ -19,8 +19,10 @@ public:
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
     std::vector<Texture> textures;
+    std::vector<Texture> normals;
     int texId;
 
     bool loadFromFile(const std::string& path);
     std::vector<Triangle> Mesh::buildTriangles();
+    void loadInTexture(aiTexture* tex, int index);
 };

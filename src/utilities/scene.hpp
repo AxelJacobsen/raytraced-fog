@@ -23,6 +23,7 @@ public:
     std::vector<Light> lights;
     BVH sceneBvh;
     int texId;
+    int normalTexId;
 
     void build() {
         bvhs.resize(meshes.size());
@@ -49,18 +50,24 @@ public:
         }
         return nodes;
     }
-    void generateTextureArray() {
+    void generateTextureArray(int type) {
         std::vector<Texture> allTextures;
         int currentID = 0;
 
+
         for (auto& mesh : meshes) {
-            if (mesh->textures.empty()) {
+            if (type == 0 && mesh->textures.empty()) {
+                mesh->texId = -1;
+                continue;
+            }            
+            if (type == 1 && mesh->normals.empty()) {
                 mesh->texId = -1;
                 continue;
             }
-
-            // TODO: FOR NOW ONLY APPENDS FIRST TEXTURE, IF ADD MORE THEN UPDATE HERE!!!
             Texture& tex = mesh->textures[0];
+            if (type == 1) {
+                tex = mesh->normals[0];
+            }
 
             mesh->texId = currentID;
             allTextures.push_back(tex);
@@ -116,7 +123,12 @@ public:
 
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
 
-        texId = texArray;
+        if (type == 0) {
+            texId = texArray;
+        }
+        else if (type == 1) {
+            normalTexId = texArray;
+        }
     }
 };
 

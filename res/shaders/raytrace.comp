@@ -47,6 +47,8 @@ struct Hit {
     float transparency;
     float reflection;
     int meshId;
+    vec3 tangent;
+    vec3 bitangent;
 };
 
 struct Light {
@@ -84,12 +86,23 @@ layout(std430, binding = 5) buffer lightBuffer {
 };
 
 layout(binding = 6) uniform sampler2DArray texArray;
+layout(binding = 7) uniform sampler2DArray normalsArray;
 
+
+// NEXT ->> LOWER LIGHTS, FIX ROUGNESS, NORMAL MAP
+// FIX TEXTURES DONE!!!
+// THEN ->> MOVEMENT MATRICES
+//          -> Static translate & rotate
+//          -> Dynamic translate & rotate
+//          time variable
+// THEN ->> FOG
+// FOR variance in fog sample x spots within the volume with noise implemented
 
 
 // Uniforms
 layout(location = 1) uniform int numMeshes;
 layout(location = 2) uniform int numLights;
+layout(location = 3) uniform int frame;
 uniform vec3 uCamPos;
 uniform mat4 uInvPV;
 
@@ -148,10 +161,11 @@ bool intersectLightSphere(Ray ray, vec3 center, float radius, out float t)
     return t > 0.001;
 };
 
-float getRoughness(vec3 albedo)
+vec3 RayAt(Ray r, float t)
 {
-    return clamp(1.0 - length(albedo), 0.2, 0.9);
+    return r.origin + r.dir * t;
 }
+
 
 vec3 getTexture(Hit hit)
 {
@@ -160,17 +174,25 @@ vec3 getTexture(Hit hit)
         vec3(hit.uv, bvhNodes[hit.meshId].texId)
     ).rgb;
 
-    //if (dot(tex, tex) < 0.0001)
-    //    tex = vec3(0.6, 0.6, 0.65);
+    if (dot(tex, tex) < 0.0001)
+        tex = vec3(0.6, 0.6, 0.65);
 
     return tex;
 }
 
-vec3 applyBloom(vec3 color)
+vec3 getNormals(Hit hit)
 {
-    float brightness = max(color.r, max(color.g, color.b));
-    float bloomFactor = smoothstep(1.0, 2.5, brightness);
-    return color * bloomFactor * 1.5;
+    vec3 norm = texture(
+        normalsArray,
+        vec3(hit.uv, bvhNodes[hit.meshId].texId)
+    ).rgb;
+
+    norm = (norm * 2.0) - 1.0;
+
+    if (dot(norm, norm) < 0.0001)
+        norm = vec3(0.6, 0.6, 0.65);
+
+    return normalize(norm);
 }
 
 vec3 applyFogAlongRay(vec3 origin, vec3 dir, float dist, vec3 currentColor)
@@ -179,8 +201,6 @@ vec3 applyFogAlongRay(vec3 origin, vec3 dir, float dist, vec3 currentColor)
 
     float transmittance = exp(-density * dist);
 
-    vec3 fogColor = vec3(0.12, 0.11, 0.10);
-
     vec3 scatter = vec3(0.0);
 
     vec3 samplePos = origin + dir * (dist * 0.5);
@@ -188,52 +208,22 @@ vec3 applyFogAlongRay(vec3 origin, vec3 dir, float dist, vec3 currentColor)
     for (int i = 0; i < numLights; i++)
     {
         vec3 Lvec = lights[i].pos.xyz - samplePos;
-        float d = length(Lvec);
-        vec3 L = Lvec / d;
+        float light_distance = length(Lvec);
+        vec3 L = Lvec / light_distance;
 
         float phase = max(dot(dir, L), 0.0);
 
         float atten = lights[i].color.a /
-            (1.0 + 0.3 * d + 0.1 * d * d);
+            (1.0 + 0.3 * light_distance + 0.1 * light_distance * light_distance);
 
-        scatter += lights[i].color.rgb * phase * atten;
+        scatter += lights[i].color.rgb *phase* atten;
     }
 
     scatter *= density * dist;
 
-    vec3 finalFog = fogColor + scatter;
-
-    return currentColor * transmittance +
-        finalFog * (1.0 - transmittance);
+    return currentColor * transmittance + scatter;
 }
 
-vec4 computeLighting(vec3 pos, vec3 normal, vec3 viewDir, vec3 albedo) {
-    vec4 outLight = vec4(0.0);
-    vec4 lightValues[MAX_LIGHTS];
-    float dist[MAX_LIGHTS];
-    float distSum = 0.0;
-    for (int l = 0; l < numLights; l++) {
-        vec3 lightDir = normalize(lights[l].pos.xyz - pos);
-
-        float diff = max(dot(normal, lightDir), 0.05);
-        diff = pow(diff, 1.5);
-
-        vec3 reflectDir = reflect(-lightDir, normal);
-        float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
-
-        vec3 diffuse = diff * albedo * lights[l].color.xyz;
-        vec3 specular = spec * lights[l].color.xyz;
-
-        lightValues[l] = vec4(diffuse + specular, 1.0);
-        dist[l] = distance(lights[l].pos.xyz, pos);
-        distSum += dist[l];
-    }
-    for (int w = 0; w < numLights; w++) {
-        float ratio = dist[w] / distSum;
-        outLight += lightValues[w] * ratio;
-    }
-    return outLight;
-};
 // partially used this: https://tavianator.com/2011/ray_box.html
 bool intersectAABB(Ray ray, vec3 bmin, vec3 bmax, out float tminOut, out float tmaxOut)
 {
@@ -254,7 +244,7 @@ bool intersectAABB(Ray ray, vec3 bmin, vec3 bmax, out float tminOut, out float t
     return tmax >= max(tmin, 0.0);
 };
 
-
+//Trace through the full scene, returns hit mesh/obj
 Hit traceScene(Ray ray)
 {
     Hit hit;
@@ -310,10 +300,23 @@ Hit traceScene(Ray ray)
                     vec2 uv2 = vertexData[i2].uv.xy;
 
                     hit.uv = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
+
+                    vec3 t0 = vertexData[i0].tangent.xyz;
+                    vec3 t1 = vertexData[i1].tangent.xyz;
+                    vec3 t2 = vertexData[i2].tangent.xyz;
+                    
+                    hit.tangent = t0 * bary.x + t1 * bary.y + t2 * bary.z;
+
+                    vec3 bt0 = vertexData[i0].bitangent.xyz;
+                    vec3 bt1 = vertexData[i1].bitangent.xyz;
+                    vec3 bt2 = vertexData[i2].bitangent.xyz;
+                    
+                    hit.bitangent = bt0 * bary.x + bt1 * bary.y + bt2 * bary.z;
                 }
             }
         }
     }
+
     const float lightRadius = 0.12;
 
     for (int i = 0; i < numLights; i++)
@@ -338,7 +341,7 @@ Hit traceScene(Ray ray)
     return hit;
 }
 
-bool isInShadow(vec3 pos, vec3 lightPos)
+Hit isInShadow(vec3 pos, vec3 lightPos)
 {
     vec3 dir = lightPos - pos;
     float maxDist = length(dir);
@@ -348,48 +351,71 @@ bool isInShadow(vec3 pos, vec3 lightPos)
     shadowRay.origin = pos + dir * 0.001;
     shadowRay.dir = dir;
 
-    Hit h = traceScene(shadowRay);
-
-    return (h.hit && h.t < maxDist);
+    return traceScene(shadowRay);
 };
 
 vec3 computeDirectLighting(vec3 pos, vec3 normal, vec3 viewDir, vec3 albedo)
 {
     vec3 result = vec3(0.0);
 
-    float roughness = getRoughness(albedo);
-    float specPower = mix(64.0, 8.0, roughness);
+    float specPower = 32;
+    float transparency_power = 1.0;
 
     for (int i = 0; i < numLights; i++)
     {
-        vec3 Lvec = lights[i].pos.xyz - pos;
-        float d = length(Lvec);
-        vec3 L = Lvec / d;
+        vec3 light_vector = lights[i].pos.xyz - pos;
+        float light_distance = length(light_vector);
+        vec3 light_dir = normalize(light_vector);
 
         //Check shadow
-        if (isInShadow(pos, lights[i].pos.xyz))
+        Hit shadowHit = isInShadow(pos, lights[i].pos.xyz);
+        if (shadowHit.hit && shadowHit.t < length(light_vector))
+            // Handle transparency of object obscuring lights here
             continue;
 
-        float ndotl = max(dot(normal, L), 0.1);
+        float norm_dot_light = max(dot(normal, light_dir), 0.0);
+        vec3 diffuse = albedo * norm_dot_light;
 
-        float atten = lights[i].color.a /
-            (1.0 + 0.3 * d + 0.1 * d * d);
+        float attenuation = lights[i].color.a / (light_distance * light_distance);
 
-        vec3 lightCol = lights[i].color.rgb * atten;
+        vec3 lightCol = lights[i].color.rgb * attenuation;
 
-        vec3 diffuse = albedo * ndotl;
-
-        vec3 R = reflect(-L, normal);
+        vec3 R = reflect(-light_dir, normal);
         float spec = pow(max(dot(viewDir, R), 0.0), specPower);
-        spec *= mix(0.02, 1.0, 1.0 - roughness);
 
-        vec3 specular = lightCol * spec;
+        vec3 specular = lightCol * spec * 0.5;
 
         result += lightCol * diffuse + specular;
     }
 
     return result;
 }
+
+vec3 directLighting(vec3 pos, vec3 normal)
+{
+    vec3 col = vec3(0.0);
+
+    for (int i = 0; i < numLights; i++)
+    {
+        vec3 Lvec = lights[i].pos.xyz - pos;
+        float dist = length(Lvec);
+        vec3 L = Lvec / dist;
+
+        Hit shadowHit = isInShadow(pos, lights[i].pos.xyz);
+
+        if (DO_SHADOWS == 1 && shadowHit.hit)
+            continue;
+
+        float ndl = max(dot(normal, L), 0.0);
+        float atten = lights[i].color.a / (dist * dist + 1.0);
+
+        col += lights[i].color.rgb * ndl * atten;
+    }
+
+    return col;
+}
+
+
 vec3 traceRay(Ray ray)
 {
     vec3 color = vec3(0.0);
@@ -407,12 +433,9 @@ vec3 traceRay(Ray ray)
             break;
         }
 
-        float dist = hit.t;
-
-        vec3 albedo_textured = getTexture(hit);
-        color += throughput * albedo_textured * 0.4 ;
-
-        albedo_textured = min(albedo_textured, vec3(0.85));
+        vec3 albedo_texture = getTexture(hit);
+        albedo_texture = min(albedo_texture, vec3(0.85));
+        color += throughput * albedo_texture * 0.4;
 
         if (hit.meshId == -2)
         {
@@ -423,7 +446,7 @@ vec3 traceRay(Ray ray)
                 if (length(hit.pos - lights[i].pos.xyz) < 0.25)
                 {
                     emission = lights[i].color.rgb *
-                        lights[i].color.a * 6.0;
+                        lights[i].color.a * 3.0;
                 }
             }
 
@@ -433,33 +456,34 @@ vec3 traceRay(Ray ray)
 
         vec3 viewDir = normalize(-ray.dir);
 
+        vec3 normalMap = getNormals(hit);
+
+        mat3 tbn = mat3(
+            normalize(hit.tangent.xyz),
+            normalize(hit.bitangent.xyz),
+            normalize(hit.normal));
+
+        vec3 normalizedNormal = normalize(tbn * normalMap);
+
+        
         vec3 direct = computeDirectLighting(
             hit.pos,
-            hit.normal,
+            normalizedNormal,
             viewDir,
-            albedo_textured
+            albedo_texture
         );
+        //vec3 direct = directLighting(hit.pos, normalizedNormal);
 
+        vec3 surface_lighting = applyFogAlongRay(ray.origin, ray.dir, hit.t, direct);
 
-        float reflectivity = 0.08;
-        float diffuseWeight = 1.0 - reflectivity;
+        color += throughput * direct;
 
-        vec3 surfaceColor = diffuseWeight * direct;
+        throughput *= albedo_texture * 0.85;
 
-        surfaceColor = applyFogAlongRay(
-            ray.origin,
-            ray.dir,
-            dist,
-            surfaceColor
-        );
-
-        color += throughput * surfaceColor;
-
-        throughput *= reflectivity;
-
-        ray.origin = hit.pos + hit.normal * 0.002;
-        if (DO_REFLECTION == 1 && hit.reflection > 0.05) {
-            ray.dir = reflect(ray.dir, hit.normal);
+        ray.origin = hit.pos + normalizedNormal * 0.002;
+        if (DO_REFLECTION == 1)
+        {
+            ray.dir = reflect(ray.dir, normalizedNormal);
         }
         if (DO_REFRACTION == 1 && hit.transparency > 0.05) {
             // REFRACITON STUFF
