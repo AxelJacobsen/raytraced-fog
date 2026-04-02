@@ -98,8 +98,12 @@ void initGame(GLFWwindow* window) {
     debugShader = new Fog::Shader();
     debugShader->makeBasicShader("../res/shaders/debug.vert", "../res/shaders/debug.frag");
 
-    scene->lights.push_back({glm::vec4(-20.0,4.0,0.0,0.0), glm::vec4(0.65,0.5,0.0, 2.0)});
-    scene->lights.push_back({glm::vec4(0.0,5.0,0.0,0.0), glm::vec4(0.0,0.0,1.0, 2.0)});
+    scene->lights.push_back({
+        glm::vec4(-20.0,4.0,0.0,2.0), 
+        glm::vec4(0.65,0.5,0.0, 2.0)});
+    scene->lights.push_back({
+        glm::vec4(0.0,5.0,0.0,1.5), 
+        glm::vec4(0.0,0.0,1.0, 2.0)});
 
     /*
     if (!torusMesh->loadFromFile("../res/models/torus.fbx")) {

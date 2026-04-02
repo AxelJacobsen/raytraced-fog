@@ -17,7 +17,7 @@ layout(rgba32f, binding = 0) uniform image2D img;
 #define DO_SHADOWS 1
 #define SHOW_EMITTERS 0
 #define LIGHT_RAD 2
-#define MAX_DEPTH 4;
+#define MAX_DEPTH 4
 
 //Structs
 struct Vertex {
@@ -45,40 +45,16 @@ struct Ray {
     float energy;
 };
 
-struct Hit {
-    bool hit;
-    float t;
-    vec3 pos;
-    vec3 normal;
-    vec2 uv;
-    float transparency;
-    float reflection;
-    int meshId;
-    vec3 tangent;
-    vec3 bitangent;
-    vec3 emission;
-};
-
-/*
-    ALPHAMODE
-    0 = MASK
-    1 = BLEND
-*/
-
 struct Material {
-    vec3 baseColor;
-    float opacity;
+    vec4 baseColor;
     vec3 emission;
-    float metallic;
-    float roughness;
-    float reflection; //rough?
-    float alpha;
-    int alphaMode;
-    float alphaCutoff;
-    float specTrans;
+
+    float ior;
+    float opacity;
+    float reflection;
 };
 
-struct HitDat {
+struct Hit {
     bool hit;
     bool isEmitter;
     float distance;
@@ -92,22 +68,6 @@ struct HitDat {
     vec3 bitangent;
 
     Material mat;
-};
-
-struct ScatterSampleRec
-{
-    vec3 L;
-    vec3 f;
-    float pdf;
-};
-
-struct LightSampleRec
-{
-    vec3 normal;
-    vec3 emission;
-    vec3 direction;
-    float dist;
-    float pdf;
 };
 
 struct Light {
@@ -166,12 +126,8 @@ layout(location = 3) uniform int frame;
 uniform vec3 uCamPos;
 uniform mat4 uInvPV;
 
-Ray makeRay(vec3 origin, vec3 dir) {
-    Ray r;
-    r.origin = origin;
-    r.dir = normalize(dir);
-    return r;
-};
+vec3 fogMin = vec3(-5.0);
+vec3 fogMax = vec3(5.0);
 
 // Ray-triangle intersection
 // Moller–Trumbore
@@ -225,13 +181,25 @@ vec3 RayAt(Ray r, float t)
     return r.origin + r.dir * t;
 }
 
+Ray makeRay(vec3 origin, vec3 dir) {
+    Ray r;
+    r.origin = origin;
+    r.dir = normalize(dir);
+    return r;
+};
+
 vec3 reject(vec3 from, vec3 onto) {
     return from - onto * dot(from, onto) / dot(onto, onto);
 }
 
+float fresnelSchlick(float cosTheta, float ior)
+{
+    float r0 = (1.0 - ior) / (1.0 + ior);
+    r0 = r0 * r0;
+    return r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
+}
 
-
-vec4 getTexture(HitDat hit)
+vec4 getTexture(Hit hit)
 {
     vec4 tex = texture(
         texArray,
@@ -244,7 +212,7 @@ vec4 getTexture(HitDat hit)
     return tex;
 }
 
-vec3 getNormals(HitDat hit)
+vec3 getNormals(Hit hit)
 {
     vec3 norm = texture(
         normalsArray,
@@ -259,15 +227,12 @@ vec3 getNormals(HitDat hit)
     return normalize(norm);
 };
 
-void getMaterial(inout HitDat hit) {
-    // FILL MATERIAL DETAILS HERE
-    if (hit.meshId > 0) {
+void getMaterial(inout Hit hit) {
+    if (hit.meshId >= 0) {
         vec4 baseCol = getTexture(hit);
-        hit.mat.baseColor = baseCol.rgb;
-        hit.mat.opacity = baseCol.a;
-        hit.mat.alphaMode = 0; //Cutoff
-        hit.mat.alphaCutoff = 0.05;
-
+        hit.mat.baseColor = baseCol;
+        hit.mat.opacity = 1.0; //baseCol.a;
+        hit.mat.ior = 0.2;
         vec3 normalMap = getNormals(hit);
 
         mat3 tbn = mat3(
@@ -279,98 +244,6 @@ void getMaterial(inout HitDat hit) {
     }
 }
 
-//https://stackoverflow.com/questions/69510208/path-tracing-cosine-hemisphere-sampling-and-emissive-objects
-uvec4 rng_initialize(vec2 p, int frame)
-{
-    return uvec4(p, frame, p.x + p.y);
-};
-
-void pcg4d(inout uvec4 v)
-{
-    v = v * 1664525u + 1013904223u;
-    v.x += v.y * v.w;
-    v.y += v.z * v.x;
-    v.z += v.x * v.y;
-    v.w += v.y * v.z;
-    v = v ^ (v >> 16u);
-    v.x += v.y * v.w;
-    v.y += v.z * v.x;
-    v.z += v.x * v.y;
-    v.w += v.y * v.z;
-};
-vec3 rand3(uvec4 seed)
-{
-    pcg4d(seed);
-    return vec3(seed.xyz) / float(0xffffffffu);
-};
-
-uvec4 rand4(uvec4 seed)
-{
-    pcg4d(seed);
-    return uvec4(seed / float(0xffffffffu));
-};
-
-vec3 sampleHemisphere(mat3 tbn, uvec4 seed, float alpha = 0.0)
-{
-    uvec4 rand = rand4(seed);
-    /*
-    float r = pow(rand.w, 1.0 / (1.0 + alpha));
-    float angle = rand.y * 2.0 * PI;
-    float sr = sqrt(1.0 - r * r);
-    vec3 ph = vec3(sr * cos(angle), sr * sin(angle), r);
-    */
-    
-    //float r1 = rand.x;
-    float r1 = rand.x *0.5 + 0.5;
-    float r2 = rand.y;
-    /*
-    float phi = 2.0 * PI * r1;
-    float cosTheta = sqrt(1.0 - r2);
-    float sinTheta = sqrt(r2);
-
-    vec3 ph = vec3(
-        cos(phi) * sinTheta,
-        sin(phi) * sinTheta,
-        cosTheta
-    );*/
-
-    float angle = (r2 + 1.0) * PI; // [-1..1] -> [0..2*PI)
-    float sr = sqrt(r1);
-    vec2 p = vec2(sr * cos(angle), sr * sin(angle));
-    vec3 ph = vec3(p.xy, sqrt(1.0 - p * p));
-
-    return normalize(tbn[0] * ph.x + tbn[1] * ph.y + tbn[2] * ph.z);
-}
-// Stackoverflow link stuff ends here
-//KYS!!!!
-vec3 applyFogAlongRay(vec3 origin, vec3 dir, float dist, vec3 currentColor)
-{
-    float density = 0.06;
-
-    float transmittance = exp(-density * dist);
-
-    vec3 scatter = vec3(0.0);
-
-    vec3 samplePos = origin + dir * (dist * 0.5);
-
-    for (int i = 0; i < numLights; i++)
-    {
-        vec3 Lvec = lights[i].pos.xyz - samplePos;
-        float light_distance = length(Lvec);
-        vec3 L = Lvec / light_distance;
-
-        float phase = max(dot(dir, L), 0.0);
-
-        float atten = lights[i].color.a /
-            (1.0 + 0.3 * light_distance + 0.1 * light_distance * light_distance);
-
-        scatter += lights[i].color.rgb * phase * atten;
-    }
-
-    scatter *= density * dist;
-
-    return currentColor * transmittance + scatter;
-};
 
 // partially used this: https://tavianator.com/2011/ray_box.html
 bool intersectAABB(Ray ray, vec3 bmin, vec3 bmax, in out float tminOut, out float tmaxOut)
@@ -391,133 +264,84 @@ bool intersectAABB(Ray ray, vec3 bmin, vec3 bmax, in out float tminOut, out floa
 
     return tmax >= max(tmin, 0.0);
 };
-/*
-//Trace through the full scene, returns hit mesh/obj
-Hit traceScene(Ray ray)
+
+float densityAt(vec3 p, Light light)
 {
-    Hit hit;
-    hit.hit = false;
-    hit.t = 1e30;
-    hit.meshId = -1;
-    hit.reflection = 0.0;
-    for (int m = 0; m < numMeshes; m++)
+    float r = light.pos.w;
+
+    vec3 toP = normalize(p - light.pos.xyz);
+    float d = length(p - light.pos.xyz) / r;
+
+    d = clamp(d, 0.0, 1.0);
+
+    // anisotropy factor (-1..1)
+    float phase = dot(toP, light.dir);
+
+    // forward bias (cone glow)
+    float angular = pow(max(phase * 0.5 + 0.5, 0.0), 4.0);
+
+    // radial falloff * directional shaping
+    return (1.0 - d * d) * angular;
+}
+
+bool intersectLightVolume(Ray r, Light light, float& t0, float& t1)
+{
+    float radius = light.pos.w;
+
+    vec3 oc = r.origin - light.pos.xyz;
+
+    float a = dot(r.dir, r.dir);
+    float b = 2.0 * dot(oc, r.dir);
+    float c = dot(oc, oc) - radius * radius;
+
+    float disc = b * b - 4.0 * a * c;
+    if (disc < 0.0) return false;
+
+    float s = sqrt(disc);
+    float invA = 1.0 / (2.0 * a);
+
+    t0 = (-b - s) * invA;
+    t1 = (-b + s) * invA;
+
+    return true;
+}
+
+vec3 sampleLightVolume(Ray r, Light light, float t0, float t1)
+{
+    int steps = 6;
+
+    float dt = (t1 - t0) / float(steps);
+
+    vec3 accum = vec3(0.0);
+    float transmittance = 1.0;
+
+    vec3 emission = light.color.rgb * light.color.a;
+
+    for (int i = 0; i < steps; i++)
     {
-        vec3 bmin = bvhAaBb[m].minBounds.xyz;
-        vec3 bmax = bvhAaBb[m].maxBounds.xyz;
+        float t = t0 + dt * (float(i) + 0.5);
+        vec3 p = r.origin + r.dir * t;
 
-        float tmin, tmax;
-        if (!intersectAABB(ray, bmin, bmax, tmin, tmax))
-            continue;
+        float density = densityAt(p, light);
 
-        int first = bvhNodes[m].firstIndex;
-        int count = bvhNodes[m].triCount;
+        float absorb = density * 0.2;
 
-        for (int i = 0; i < count; i++)
-        {
-            int baseIdx = (first + i) * 3;
-
-            uint i0 = indices[baseIdx + 0];
-            uint i1 = indices[baseIdx + 1];
-            uint i2 = indices[baseIdx + 2];
-
-            vec3 v0 = vertexData[i0].position.xyz;
-            vec3 v1 = vertexData[i1].position.xyz;
-            vec3 v2 = vertexData[i2].position.xyz;
-
-            float t;
-            vec3 bary;
-
-            if (intersectTriangle(ray, v0, v1, v2, t, bary))
-            {
-                if (t < hit.t)
-                {
-                    hit.hit = true;
-                    hit.t = t;
-                    hit.meshId = m;
-
-                    hit.pos = ray.origin + ray.dir * t;
-
-                    vec3 n0 = vertexData[i0].normal.xyz;
-                    vec3 n1 = vertexData[i1].normal.xyz;
-                    vec3 n2 = vertexData[i2].normal.xyz;
-
-                    hit.normal = normalize(n0 * bary.x + n1 * bary.y + n2 * bary.z);
-
-                    vec2 uv0 = vertexData[i0].uv.xy;
-                    vec2 uv1 = vertexData[i1].uv.xy;
-                    vec2 uv2 = vertexData[i2].uv.xy;
-
-                    hit.uv = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
-
-                    vec3 t0 = vertexData[i0].tangent.xyz;
-                    vec3 t1 = vertexData[i1].tangent.xyz;
-                    vec3 t2 = vertexData[i2].tangent.xyz;
-                    
-                    hit.tangent = t0 * bary.x + t1 * bary.y + t2 * bary.z;
-
-                    vec3 bt0 = vertexData[i0].bitangent.xyz;
-                    vec3 bt1 = vertexData[i1].bitangent.xyz;
-                    vec3 bt2 = vertexData[i2].bitangent.xyz;
-                    
-                    hit.bitangent = bt0 * bary.x + bt1 * bary.y + bt2 * bary.z;
-                    hit.reflection = 1.0;
-                }
-            }
-        }
+        accum += transmittance * emission * absorb * dt;
+        transmittance *= exp(-absorb * dt);
     }
 
-    // prevent light through wall
-    if (hit.hit) { hit.pos -= normalize(ray.dir); };
+    return accum;
+}
 
-    for (int i = 0; i < numLights; i++)
-    {
-        float tLight;
-        if (intersectLightSphere(ray, lights[i].pos.xyz, tLight))
-        {
-            if (tLight < hit.t)
-            {
-                hit.hit = true;
-                hit.t = tLight;
-
-                hit.meshId = -2;
-
-                hit.pos = ray.origin + ray.dir * tLight;
-                hit.normal = normalize(hit.pos - lights[i].pos.xyz);
-            }
-        }
-    }
-
-    return hit;
-}*/
-
-Hit intersectRay(Ray ray, HitDat hitState, inout LightSampleRec lightSample)
+Hit intersectRay(Ray ray)
 {
-    float hitDist = INF;
-    float d;
+    Hit hitState;
+
     hitState.hit = false;
+    hitState.isEmitter = false;
+    hitState.distance = INF;
     hitState.meshId = -1;
-
-    for (int i = 0; i < numLights; i++)
-    {
-        float tLight;
-        if (intersectLightSphere(ray, lights[i].pos.xyz, tLight))
-        {
-            if (tLight < hitDist)
-            {
-                hitState.hit = true;
-                hitDist = tLight;
-
-                hitState.meshId = -2;
-
-                hitState.pos = ray.origin + ray.dir * tLight;
-                hitState.normal = normalize(hitState.pos - lights[i].pos.xyz);
-
-                float d = length(hitState.pos - lights[i].pos.xyz);
-                hitState.mat.alpha = exp(-(d * d) / (LIGHT_RAD * LIGHT_RAD));
-                hitState.mat.alphaMode = 1;
-            }
-        }
-    }
+    float d;
 
     for (int m = 0; m < numMeshes; m++)
     {
@@ -551,13 +375,13 @@ Hit intersectRay(Ray ray, HitDat hitState, inout LightSampleRec lightSample)
 
             if (intersectTriangle(ray, v0, v1, v2, t, bary))
             {
-                if (t < hitDist)
+                if (t < hitState.distance)
                 {
                     hitState.hit = true;
-                    hitDist = t;
+                    hitState.distance = t;
                     hitState.meshId = m;
 
-                    hitState.pos = ray.origin + ray.dir * hitDist;
+                    hitState.pos = ray.origin + ray.dir * hitState.distance;
 
                     vec3 n0 = vertexData[i0].normal.xyz;
                     vec3 n1 = vertexData[i1].normal.xyz;
@@ -585,14 +409,42 @@ Hit intersectRay(Ray ray, HitDat hitState, inout LightSampleRec lightSample)
                 }
             }
         }
+
+        for (int i = 0; i < numLights; i++)
+        {
+            float tLight = INF;
+            if (intersectLightSphere(ray, lights[i].pos.xyz, tLight))
+            {
+                if (tLight < hitState.distance)
+                {
+                    hitState.hit = true;
+                    hitState.distance = tLight;
+
+                    hitState.meshId = -2;
+
+                    hitState.pos = ray.origin + ray.dir * tLight;
+                    hitState.normal = normalize(hitState.pos - lights[i].pos.xyz);
+
+                    float d = length(hitState.pos - lights[i].pos.xyz);
+
+                    hitState.isEmitter = true;
+                    hitState.mat.baseColor = lights[i].color;
+                    hitState.mat.emission = lights[i].color.rgb * lights[i].color.a;
+                    hitState.mat.opacity = 1.0;
+                    hitState.mat.reflection = 0.1;
+                    hitState.mat.ior = 1.0;
+                    hitState.mat.baseColor.a = lights[i].color.a;
+                }
+            }
+        }
     }
 
     // prevent light through wall
-    if (hitState.hit) { hitState.pos -= normalize(ray.dir); };
+    if (hitState.hit) { hitState.pos -= ray.dir * EPS; }
     return hitState;
 }
 
-Hit isInShadow(vec3 pos, vec3 lightPos)
+Hit calculateShadow(vec3 pos, vec3 lightPos)
 {
     vec3 dir = lightPos - pos;
     float maxDist = length(dir);
@@ -605,346 +457,146 @@ Hit isInShadow(vec3 pos, vec3 lightPos)
     return intersectRay(shadowRay);
 };
 
-vec3 UniformSampleHemisphere(float r1, float r2)
+
+vec3 lambertBRDF(Hit hit)
 {
-    float r = sqrt(max(0.0, 1.0 - r1 * r1));
-    float phi = 2.0 * PI * r2;
-    return vec3(r * cos(phi), r * sin(phi), r1);
+    return hit.mat.baseColor.rgb / PI;
 }
 
-void Onb(in vec3 N, inout vec3 T, inout vec3 B)
-{
-    vec3 up = abs(N.z) < 0.9999999 ? vec3(0, 0, 1) : vec3(1, 0, 0);
-    T = normalize(cross(up, N));
-    B = cross(N, T);
-}
-
-vec3 EvalTransmittance(Ray r)
-{
-    LightSampleRec lightSample;
-    HitDat state;
-    vec3 transmittance = vec3(1.0);
-
-    for (int depth = 0; depth < MAX_DEPTH; depth++)
-    {
-        bool hit = intersectRay(r, state, lightSample);
-
-        // If no hit (environment map) or if ray hit a light source then return transmittance
-        if (!hit || state.isEmitter)
-            break;
-
-        getMaterial(state);
-
-        bool alphatest = ((state.mat.alphaMode == 0 && state.mat.opacity < state.mat.alphaCutoff) || (state.mat.alphaMode == 1 && rand() > state.mat.opacity));
-        bool refractive = (1.0 - state.mat.metallic) * state.mat.specTrans > 0.0;
-
-        // Refraction is ignored (Not physically correct but helps with sampling lights from inside refractive objects)
-        if (hit && !(alphatest || refractive))
-            return vec3(0.0);
-
-        // Evaluate transmittance
-        /* REWORK FOR SEE THORUGH
-        if (dot(r.direction, state.normal) > 0 && state.mat.medium.type != MEDIUM_NONE)
-        {
-            vec3 color = state.mat.medium.type == MEDIUM_ABSORB ? vec3(1.0) - state.mat.medium.color : vec3(1.0);
-            transmittance *= exp(-color * state.mat.medium.density * state.hitDist);
-        }*/
-
-        // Move ray origin to hit point
-        r.origin = state.pos + r.dir * EPS;
-    }
-
-    return transmittance;
-}
-
-
-void SampleSphereLight(int lightIndex, in vec3 scatterPos, inout LightSampleRec lightSample)
-{
-    uvec4 rand = rand4(seed);
-
-    float r1 = rand.x;
-    float r2 = rand.y;
-
-    vec3 sphereCentertoSurface = scatterPos - lights[lightIndex].pos.xyz;
-    float distToSphereCenter = length(sphereCentertoSurface);
-    vec3 sampledDir;
-
-    // TODO: Fix this. Currently assumes the light will be hit only from the outside
-    sphereCentertoSurface /= distToSphereCenter;
-    sampledDir = UniformSampleHemisphere(r1, r2);
-    vec3 T, B;
-    Onb(sphereCentertoSurface, T, B);
-    sampledDir = T * sampledDir.x + B * sampledDir.y + sphereCentertoSurface * sampledDir.z;
-
-    vec3 lightSurfacePos = lights[lightIndex].pos.xyz + sampledDir * LIGHT_RAD;
-
-    lightSample.direction = lightSurfacePos - scatterPos;
-    lightSample.dist = length(lightSample.direction);
-    float distSq = lightSample.dist * lightSample.dist;
-
-    lightSample.direction /= lightSample.dist;
-    lightSample.normal = normalize(lightSurfacePos - lights[lightIndex].pos.xyz);
-    lightSample.emission = lights[lightIndex].color.rgb * lights[lightIndex].color.a;
-    lightSample.pdf = distSq / (light.area * 0.5 * abs(dot(lightSample.normal, lightSample.direction)));
-}
-
-
-vec3 computeDirectLight(Hit hitState, Ray ray)
-{
-    LightSampleRec lightSample;
-    vec3 scatterPos = hitState.pos + hitState.normal * EPS;
-
-    vec3 result = vec3(0.0);
-
-    float specPower = 32;
-    float transparency_power = 1.0;
-
-    for (int i = 0; i < numLights; i++)
-    {
-        SampleSphereLight(i, scatterPos, lightSample);
-        Li = lightSample.emission;
-        result += lightCol * diffuse + specular;
-        Ray shadowRay;
-        shadowRay.origin = scatterPos;
-        shadowRay.dir = lightSample.direction;
-        Hit shadowHit = isInShadow(scatterPos, lights[i].pos.xyz);
-        if (shadowHit.hit && shadowHit.t < length(light_vector))
-            continue;
-        float norm_dot_light = max(dot(normal, light_dir), 0.0);
-        vec3 diffuse = albedo * norm_dot_light;
-
-        vec3 light_vector = lights[i].pos.xyz - hitState.pos;
-        float light_distance = length(light_vector);
-        float attenuation = lights[i].color.a / (light_distance * light_distance);
-
-        vec3 lightCol = lights[i].color.rgb * attenuation;
-
-        vec3 R = reflect(-light_dir, normal);
-        float spec = pow(max(dot(viewDir, R), 0.0), specPower);
-
-        vec3 specular = lightCol * spec * 0.5;
-
-        result += (lightCol * diffuse + specular);
-    }
-    return result;
-}
-/*
-Hit isInShadow(vec3 pos, vec3 lightPos)
-{
-    vec3 dir = lightPos - pos;
-    float maxDist = length(dir);
-    dir /= maxDist;
-
-    Ray shadowRay;
-    shadowRay.origin = pos + dir * 0.001;
-    shadowRay.dir = dir;
-
-    return traceScene(shadowRay);
-};
-
-vec3 computeDirectLighting(vec3 pos, vec3 normal, vec3 viewDir, vec3 albedo)
+vec3 directLight(Hit hit, vec3 viewDir)
 {
     vec3 result = vec3(0.0);
 
-    float specPower = 32;
-    float transparency_power = 1.0;
-
     for (int i = 0; i < numLights; i++)
     {
-        vec3 light_vector = lights[i].pos.xyz - pos;
-        float light_distance = length(light_vector);
-        vec3 light_dir = normalize(light_vector);
+        vec3 Lvec = lights[i].pos.xyz - hit.pos;
+        float dist = length(Lvec);
+        vec3 L = Lvec / dist;
 
-        //Check shadow
-        Hit shadowHit = isInShadow(pos, lights[i].pos.xyz);
-        if (shadowHit.hit && shadowHit.t < length(light_vector))
-            // Handle transparency of object obscuring lights here
+        // shadow
+        Hit shadow = calculateShadow(hit.pos, lights[i].pos.xyz);
+        if (shadow.hit && shadow.distance < dist)
             continue;
 
-        float norm_dot_light = max(dot(normal, light_dir), 0.0);
-        vec3 diffuse = albedo * norm_dot_light;
+        float ndotl = max(dot(hit.normal, L), 0.0);
 
-        float attenuation = lights[i].color.a / (light_distance * light_distance);
+        float attenuation = lights[i].color.a / (1.0 + 0.2 * dist + 0.05 * dist * dist);
 
         vec3 lightCol = lights[i].color.rgb * attenuation;
 
-        vec3 R = reflect(-light_dir, normal);
-        float spec = pow(max(dot(viewDir, R), 0.0), specPower);
-
-        vec3 specular = lightCol * spec * 0.5;
-
-        result += lightCol * diffuse + specular;
+        result += ndotl * lightCol * lambertBRDF(hit);
     }
 
     return result;
 }
 
-
-vec3 traceRay(Ray ray, uvec4 seed)
+vec3 trace(Ray ray)
 {
     vec3 color = vec3(0.0);
     vec3 throughput = vec3(1.0);
 
-    const int MAX_BOUNCES = 4;
+    float currentIOR = 1.0;
 
-    for (int b = 0; b < MAX_BOUNCES; b++)
+    for (int bounce = 0; bounce < MAX_DEPTH; bounce++)
     {
-        Hit hit = traceScene(ray);
-
+        Hit hit = intersectRay(ray);
         if (!hit.hit)
-        {
-            color += throughput * vec3(0.03);
             break;
-        }
 
-        vec3 albedo_texture = getTexture(hit);
-        albedo_texture = min(albedo_texture, vec3(0.85));
-        //color += throughput * albedo_texture * 0.4;
-
-        if (hit.meshId == -2)
-        {
-            vec3 emission = vec3(0.0);
-
-            for (int i = 0; i < numLights; i++)
-            {
-                if (length(hit.pos - lights[i].pos.xyz) < 2.25)
-                {
-                    emission = lights[i].color.rgb *
-                        lights[i].color.a * 3.0;
-                }
-            }
-
-            color += throughput * emission;
-            break;
-        }
+        getMaterial(hit);
 
         vec3 viewDir = normalize(-ray.dir);
 
-        vec3 normalMap = getNormals(hit);
+        // ----------------------------
+        // EMISSIVE SURFACES (if any)
+        // ----------------------------
+        if (hit.isEmitter)
+        {
+            color += throughput * hit.mat.emission;
+            break;
+        }
 
-        mat3 tbn = mat3(
-            normalize(hit.tangent.xyz),
-            normalize(hit.bitangent.xyz),
-            normalize(hit.normal));
+        // ----------------------------
+        // DIRECT LIGHT (point lights fallback)
+        // ----------------------------
+        vec3 direct = vec3(0.0);
 
-        vec3 normalizedNormal = normalize(tbn * normalMap);
+        for (int i = 0; i < numLights; i++)
+        {
+            vec3 Lvec = lights[i].pos.xyz - hit.pos;
+            float dist = length(Lvec);
+            vec3 L = Lvec / dist;
 
+            // shadow
+            Hit shadow = calculateShadow(hit.pos, lights[i].pos.xyz);
+            if (shadow.hit && shadow.distance < dist)
+                continue;
 
-        vec3 direct = computeDirectLighting(
-            hit.pos,
-            normalizedNormal,
-            viewDir,
-            albedo_texture
-        );
-        vec3 surface_lighting = applyFogAlongRay(ray.origin, ray.dir, hit.t, direct);
+            float ndotl = max(dot(hit.normal, L), 0.0);
+
+            float atten = lights[i].color.a /
+                (1.0 + 0.2 * dist + 0.05 * dist * dist);
+
+            vec3 lightCol = lights[i].color.rgb * atten;
+
+            direct += ndotl * lightCol * hit.mat.baseColor.rgb;
+        }
 
         color += throughput * direct;
 
-        throughput *= albedo_texture;// *0.85;
-
-        ray.origin = hit.pos + normalizedNormal * 0.002;
-        if (DO_REFLECTION == 1)
+        // ----------------------------
+        // LIGHT VOLUME CONTRIBUTION
+        // ----------------------------
+        for (int i = 0; i < numLights; i++)
         {
-            //ray.dir = normalize(normalizedNormal + normalize(rand3(seed)));
-            ray.dir = sampleHemisphere(tbn, seed);
-            //ray.dir = reflect(ray.dir, normalizedNormal);
+            float t0, t1;
+
+            if (intersectLightVolume(ray, lights[i], t0, t1))
+            {
+                color += throughput * sampleLightVolume(ray, lights[i], t0, t1);
+            }
         }
-        if (DO_REFRACTION == 1 && hit.transparency > 0.05) {
-            // REFRACITON STUFF
+
+        // ----------------------------
+        // SURFACE RESPONSE
+        // ----------------------------
+        float reflectProb = hit.mat.reflection;
+
+        vec3 reflectDir = reflect(ray.dir, hit.normal);
+        vec3 refractDir = refract(ray.dir, hit.normal, hit.mat.ior);
+
+        bool canRefract = length(refractDir) > EPS;
+
+        float r = fract(sin(dot(hit.pos.xy, vec2(12.9898, 78.233))) * 43758.5453);
+
+        if (hit.mat.opacity < 0.99 && canRefract && r > reflectProb)
+        {
+            ray.dir = refractDir;
+            ray.origin = hit.pos + ray.dir * EPS;
+        }
+        else
+        {
+            ray.dir = reflectDir;
+            ray.origin = hit.pos + ray.dir * EPS;
+        }
+
+        // energy conservation-ish throughput
+        throughput *= hit.mat.baseColor.rgb;
+
+        // ----------------------------
+        // RUSSIAN ROULETTE (stability)
+        // ----------------------------
+        if (bounce > 2)
+        {
+            float p = max(throughput.r, max(throughput.g, throughput.b));
+            if (fract(sin(float(bounce) * 12.989) * 43758.545) > p)
+                break;
+
+            throughput /= max(p, 0.001);
         }
     }
 
     return color;
-};
-
-vec3 shading(inout Ray ray, Hit hit, mat3 tbn, uvec4 seed)
-{
-    ray.origin = hit.pos + tbn[2] * 1e-5;
-    ray.dir = normalize(sampleHemisphere(tbn, seed));
-    ray.energy *= 2.0 * hit.reflection * max(dot(normalize(tbn[2]), ray.dir), 0.0);
-    return hit.emission;
-}
-*/
-vec4 pathTrace(Ray ray, uvec4 seed)
-{
-    vec3 radiance = vec3(0.0);
-    vec3 throughput = vec3(1.0);
-    HitDat hit;
-    LightSampleRec lightSample;
-    float alpha = 1.0;
-    bool inMedium = false;
-    bool mediumSampled = false;
-    bool surfaceScatter = false;
-
-    for (int hit.depth = 0; hit.depth < MAX_DEPTH; hit.depth++)
-    {
-        hit = intersectRay(ray, hit, lightSample);
-
-        if (!hit.hit)
-        {
-            if (hit.depth == 0) {
-                alpha = 0.0;
-            }
-            else if (SHOW_EMITTERS == 0) {
-                //Dont think this is relevant for le'moi
-            }
-            return color;
-        }
-        
-        GetMaterial(hit);
-        radiance += hit.mat.emission * throughput;
-        if (hit.depth == MAX_DEPTH)
-            return radiance;
-        /* MIGHT BE RELEVANT
-                if(inMedium)
-        {
-            if(state.medium.type == MEDIUM_ABSORB)
-            {
-                throughput *= exp(-(1.0 - state.medium.color) * state.hitDist * state.medium.density);
-            }
-            else if(state.medium.type == MEDIUM_EMISSIVE)
-            {
-                radiance += state.medium.color * state.hitDist * state.medium.density * throughput;
-            }
-            else
-            {
-                // Sample a distance in the medium
-                float scatterDist = min(-log(rand()) / state.medium.density, state.hitDist);
-                mediumSampled = scatterDist < state.hitDist;
-
-                if (mediumSampled)
-                {
-                    throughput *= state.medium.color;
-
-                    // Move ray origin to scattering position
-                    r.origin += r.direction * scatterDist;
-                    state.fhp = r.origin;
-
-                    // Transmittance Evaluation
-                    radiance += DirectLight(r, state, false) * throughput;
-
-                    // Pick a new direction based on the phase function
-                    vec3 scatterDir = SampleHG(-r.direction, state.medium.anisotropy, rand(), rand());
-                    scatterSample.pdf = PhaseHG(dot(-r.direction, scatterDir), state.medium.anisotropy);
-                    r.direction = scatterDir;
-                }
-            }
-        }
-        */
-        //AKA Not in soup,
-        if (!mediumSampled) {
-            if ((state.mat.alphaMode == ALPHA_MODE_MASK && state.mat.opacity < state.mat.alphaCutoff) ||
-                (state.mat.alphaMode == ALPHA_MODE_BLEND && rand() > state.mat.opacity))
-            {
-                state.depth--;
-            }
-            else {
-                surfaceScatter = true;
-                radiance += computeDirectLightcomputeDirectLight(ray, state) * throughput;
-            }
-        }
-    }
-    return vec4(radiance, alpha);
 }
 
 void main()
@@ -954,8 +606,6 @@ void main()
 
     if (pixel.x >= size.x || pixel.y >= size.y)
         return;
-
-    uvec4 randomSeed = rng_initialize(pixel, frame);
 
     vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
     vec2 ndc = uv * 2.0 - 1.0;
@@ -967,10 +617,8 @@ void main()
     Ray ray;
     ray.origin = uCamPos;
     ray.dir = normalize(world.xyz - uCamPos);
-    ray.energy = 0.4;
+    ray.energy = 1.0;
+    vec3 col = trace(ray);
 
-    //vec3 col = traceRaySimple(ray, randomSeed);
-    vec4 col = pathTrace(ray, randomSeed);
-
-    imageStore(img, pixel, col);
+    imageStore(img, pixel, vec4(col, 1.0));
 }
