@@ -3,27 +3,19 @@
 layout(local_size_x = 16, local_size_y = 16) in;
 layout(rgba32f, binding = 0) uniform image2D img;
 
-// Constants
 #define MAX_MESHES 8
 #define MAX_LIGHTS 16
 #define PI 3.14159265359
 #define INF 1e30
 #define EPS 0.0003
-
-// Suggestion taken from 
-// https://github.com/wsandst/gpu-raytracer/blob/master/src/shaders/pathtracer.comp
-#define DO_REFLECTION 1
-#define DO_REFRACTION 0
-#define DO_SHADOWS 1
-#define SHOW_EMITTERS 0
-#define LIGHT_RAD 2
 #define MAX_DEPTH 4
 
-//Structs
+#define FOG_STEPS 10
+
 struct Vertex {
     vec4 position;
     vec4 normal;
-    vec4 uv; //Transparency on z & reflectivity on a
+    vec4 uv;
     vec4 tangent;
     vec4 bitangent;
 };
@@ -58,7 +50,6 @@ struct Hit {
     bool hit;
     bool isEmitter;
     float distance;
-    int depth;
     int meshId;
 
     vec3 pos;
@@ -75,128 +66,55 @@ struct Light {
     vec4 color;
 };
 
-struct Transform {
-    mat4 translate;
-    mat4 rotation;
-};
+layout(std430, binding = 1) buffer BVHNodes { BVHNode bvhNodes[]; };
+layout(std430, binding = 2) buffer VertexBuffer { Vertex vertexData[]; };
+layout(std430, binding = 3) buffer IndexBuffer { uint indices[]; };
+layout(std430, binding = 4) buffer boundsBuffer { AABB bvhAaBb[]; };
+layout(std430, binding = 5) buffer lightBuffer { Light lights[]; };
 
-// Flattened BVH nodes
-layout(std430, binding = 1) buffer BVHNodes {
-    BVHNode bvhNodes[];
-};
-
-// Flattened vertices
-layout(std430, binding = 2) buffer VertexBuffer {
-    Vertex vertexData[];
-};
-
-// Flattened indices
-layout(std430, binding = 3) buffer IndexBuffer {
-    uint indices[];
-};
-
-// Bounds buffer
-layout(std430, binding = 4) buffer boundsBuffer {
-    AABB bvhAaBb[];
-};
-
-// Lighting
-layout(std430, binding = 5) buffer lightBuffer {
-    Light lights[];
-};
-
-layout(binding = 6) uniform sampler2DArray texArray;
-layout(binding = 7) uniform sampler2DArray normalsArray;
-
-
-// NEXT ->> LOWER LIGHTS, FIX ROUGNESS, NORMAL MAP
-// FIX TEXTURES DONE!!!
-// THEN ->> MOVEMENT MATRICES
-//          -> Static translate & rotate
-//          -> Dynamic translate & rotate
-//          time variable
-// THEN ->> FOG
-// FOR variance in fog sample x spots within the volume with noise implemented
-
-
-// Uniforms
 layout(location = 1) uniform int numMeshes;
 layout(location = 2) uniform int numLights;
 layout(location = 3) uniform int frame;
+
+layout(binding = 6) uniform sampler2DArray texArray;
+layout(binding = 7) uniform sampler2DArray normalsArray;
 uniform vec3 uCamPos;
 uniform mat4 uInvPV;
 
 vec3 fogMin = vec3(-5.0);
 vec3 fogMax = vec3(5.0);
 
-// Ray-triangle intersection
-// Moller–Trumbore
-bool intersectTriangle(Ray ray, vec3 v0, vec3 v1, vec3 v2, out float t, out vec3 bary) {
-    vec3 e1 = v1 - v0;
-    vec3 e2 = v2 - v0;
-
-    vec3 p = cross(ray.dir, e2);
-    float det = dot(e1, p);
-
-    if (abs(det) < EPS) return false;
-
-    float invDet = 1.0 / det;
-
-    vec3 tvec = ray.origin - v0;
-    float u = dot(tvec, p) * invDet;
-    if (u < 0.0 || u > 1.0) return false;
-
-    vec3 q = cross(tvec, e1);
-    float v = dot(ray.dir, q) * invDet;
-    if (v < 0.0 || (u + v) > 1.0) return false;
-
-    t = dot(e2, q) * invDet;
-    bary = vec3(1.0 - u - v, u, v);
-
-    return t > EPS;
-};
-
-bool intersectLightSphere(Ray ray, vec3 center, out float t)
+float hash(vec3 p)
 {
-    vec3 oc = ray.origin - center;
-
-    float a = dot(ray.dir, ray.dir);
-    float b = 2.0 * dot(oc, ray.dir);
-    float c = dot(oc, oc) - LIGHT_RAD * LIGHT_RAD;
-
-    float discriminant = b * b - 4.0 * a * c;
-    if (discriminant < 0.0) return false;
-
-    float s = sqrt(discriminant);
-    float t0 = (-b - s) / (2.0 * a);
-    float t1 = (-b + s) / (2.0 * a);
-
-    t = (t0 > 0.001) ? t0 : t1;
-    return t > 0.001;
-};
-
-// Helper funcs
-vec3 RayAt(Ray r, float t)
-{
-    return r.origin + r.dir * t;
+    p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3));
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
 }
 
-Ray makeRay(vec3 origin, vec3 dir) {
-    Ray r;
-    r.origin = origin;
-    r.dir = normalize(dir);
-    return r;
-};
-
-vec3 reject(vec3 from, vec3 onto) {
-    return from - onto * dot(from, onto) / dot(onto, onto);
-}
-
-float fresnelSchlick(float cosTheta, float ior)
+float noise(vec3 p)
 {
-    float r0 = (1.0 - ior) / (1.0 + ior);
-    r0 = r0 * r0;
-    return r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    vec3 u = f * f * (3.0 - 2.0 * f);
+
+    float n000 = hash(i);
+    float n100 = hash(i + vec3(1, 0, 0));
+    float n010 = hash(i + vec3(0, 1, 0));
+    float n110 = hash(i + vec3(1, 1, 0));
+    float n001 = hash(i + vec3(0, 0, 1));
+    float n101 = hash(i + vec3(1, 0, 1));
+    float n011 = hash(i + vec3(0, 1, 1));
+    float n111 = hash(i + vec3(1, 1, 1));
+
+    float nx00 = mix(n000, n100, u.x);
+    float nx10 = mix(n010, n110, u.x);
+    float nx01 = mix(n001, n101, u.x);
+    float nx11 = mix(n011, n111, u.x);
+
+    float nxy0 = mix(nx00, nx10, u.y);
+    float nxy1 = mix(nx01, nx11, u.y);
+
+    return mix(nxy0, nxy1, u.z);
 }
 
 vec4 getTexture(Hit hit)
@@ -227,122 +145,156 @@ vec3 getNormals(Hit hit)
     return normalize(norm);
 };
 
-void getMaterial(inout Hit hit) {
-    if (hit.meshId >= 0) {
-        vec4 baseCol = getTexture(hit);
-        hit.mat.baseColor = baseCol;
-        hit.mat.opacity = 1.0; //baseCol.a;
-        hit.mat.ior = 0.2;
-        vec3 normalMap = getNormals(hit);
+void applyMaterial(inout Hit hit)
+{
+    if (hit.meshId < 0) return;
 
-        mat3 tbn = mat3(
-            normalize(hit.tangent.xyz),
-            normalize(hit.bitangent.xyz),
-            normalize(hit.normal));
+    vec4 baseCol = getTexture(hit);
+    hit.mat.baseColor = baseCol;
+    hit.mat.opacity = 1.0;
+    hit.mat.ior = 1.5;
+    hit.mat.reflection = 0.1;
 
-        hit.normal = normalize(tbn * normalMap);
-    }
+    vec3 nrmMap = getNormals(hit);
+
+    mat3 tbn = mat3(
+        normalize(hit.tangent),
+        normalize(hit.bitangent),
+        normalize(hit.normal)
+    );
+
+    hit.normal = normalize(tbn * nrmMap);
 }
 
+bool intersectTriangle(Ray ray, vec3 v0, vec3 v1, vec3 v2, out float t, out vec3 bary) {
+    vec3 e1 = v1 - v0;
+    vec3 e2 = v2 - v0;
 
-// partially used this: https://tavianator.com/2011/ray_box.html
-bool intersectAABB(Ray ray, vec3 bmin, vec3 bmax, in out float tminOut, out float tmaxOut)
+    vec3 p = cross(ray.dir, e2);
+    float det = dot(e1, p);
+
+    if (abs(det) < EPS) return false;
+
+    float invDet = 1.0 / det;
+
+    vec3 tvec = ray.origin - v0;
+    float u = dot(tvec, p) * invDet;
+    if (u < 0.0 || u > 1.0) return false;
+
+    vec3 q = cross(tvec, e1);
+    float v = dot(ray.dir, q) * invDet;
+    if (v < 0.0 || (u + v) > 1.0) return false;
+
+    t = dot(e2, q) * invDet;
+    bary = vec3(1.0 - u - v, u, v);
+
+    return t > EPS;
+};
+
+bool intersectLightSphere(Ray ray, vec4 light, out float t)
+{
+    vec3 oc = ray.origin - light.xyz;
+
+    float a = dot(ray.dir, ray.dir);
+    float b = 2.0 * dot(oc, ray.dir);
+    float c = dot(oc, oc) - light.w * light.w;
+
+    float discriminant = b * b - 4.0 * a * c;
+    if (discriminant < 0.0) return false;
+
+    float s = sqrt(discriminant);
+    float t0 = (-b - s) / (2.0 * a);
+    float t1 = (-b + s) / (2.0 * a);
+
+    t = (t0 > 0.001) ? t0 : t1;
+    return t > 0.001;
+};
+
+bool insideFog(vec3 p)
+{
+    return all(greaterThan(p, fogMin)) && all(lessThan(p, fogMax));
+}
+
+bool intersectAABB(Ray ray, vec3 bmin, vec3 bmax, out float tminOut, out float tmaxOut)
 {
     vec3 invDir = 1.0 / ray.dir;
 
     vec3 t0 = (bmin - ray.origin) * invDir;
     vec3 t1 = (bmax - ray.origin) * invDir;
 
-    vec3 tsmaller = min(t0, t1);
-    vec3 tbigger = max(t0, t1);
+    vec3 lo = min(t0, t1);
+    vec3 hi = max(t0, t1);
 
-    float tmin = max(max(tsmaller.x, tsmaller.y), tsmaller.z);
-    float tmax = min(min(tbigger.x, tbigger.y), tbigger.z);
+    tminOut = max(max(lo.x, lo.y), lo.z);
+    tmaxOut = min(min(hi.x, hi.y), hi.z);
 
-    tminOut = tmin;
-    tmaxOut = tmax;
-
-    return tmax >= max(tmin, 0.0);
-};
-
-float densityAt(vec3 p, Light light)
-{
-    float r = light.pos.w;
-
-    vec3 toP = normalize(p - light.pos.xyz);
-    float d = length(p - light.pos.xyz) / r;
-
-    d = clamp(d, 0.0, 1.0);
-
-    // anisotropy factor (-1..1)
-    float phase = dot(toP, light.dir);
-
-    // forward bias (cone glow)
-    float angular = pow(max(phase * 0.5 + 0.5, 0.0), 4.0);
-
-    // radial falloff * directional shaping
-    return (1.0 - d * d) * angular;
+    return tmaxOut >= max(tminOut, 0.0);
 }
 
-bool intersectLightVolume(Ray r, Light light, float& t0, float& t1)
+float fogDensity(vec3 p)
 {
-    float radius = light.pos.w;
-
-    vec3 oc = r.origin - light.pos.xyz;
-
-    float a = dot(r.dir, r.dir);
-    float b = 2.0 * dot(oc, r.dir);
-    float c = dot(oc, oc) - radius * radius;
-
-    float disc = b * b - 4.0 * a * c;
-    if (disc < 0.0) return false;
-
-    float s = sqrt(disc);
-    float invA = 1.0 / (2.0 * a);
-
-    t0 = (-b - s) * invA;
-    t1 = (-b + s) * invA;
-
-    return true;
+    float n = noise(p * 0.7 + float(frame) * 0.01);
+    return smoothstep(0.35, 0.85, n);
 }
 
-vec3 sampleLightVolume(Ray r, Light light, float t0, float t1)
+float lightContribution(vec3 p, Light l)
 {
-    int steps = 6;
+    vec3 toL = l.pos.xyz - p;
+    float d = length(toL);
+    vec3 L = toL / d;
 
-    float dt = (t1 - t0) / float(steps);
+    float atten = l.color.a / (1.0 + 0.15 * d + 0.05 * d * d);
+    float phase = max(dot(L, normalize(vec3(0.0, 1.0, 0.0))), 0.0);
 
-    vec3 accum = vec3(0.0);
-    float transmittance = 1.0;
+    return atten * phase;
+}
 
-    vec3 emission = light.color.rgb * light.color.a;
+float sampleFog(Ray ray, float t0, float t1)
+{
+    float dt = (t1 - t0) / float(FOG_STEPS);
 
-    for (int i = 0; i < steps; i++)
+    float trans = 1.0;
+    float result = 0.0;
+
+    for (int i = 0; i < FOG_STEPS; i++)
     {
         float t = t0 + dt * (float(i) + 0.5);
-        vec3 p = r.origin + r.dir * t;
+        vec3 p = ray.origin + ray.dir * t;
 
-        float density = densityAt(p, light);
+        if (!insideFog(p)) continue;
 
-        float absorb = density * 0.2;
+        float dens = fogDensity(p);
+        float absorb = dens * 0.3;
 
-        accum += transmittance * emission * absorb * dt;
-        transmittance *= exp(-absorb * dt);
+        float lightSum = 0.0;
+        for (int j = 0; j < numLights; j++)
+        {
+            lightSum += lightContribution(p, lights[j]);
+        }
+
+        result += trans * absorb * lightSum * dt;
+        trans *= exp(-absorb * dt);
     }
 
-    return accum;
+    return result;
+}
+
+bool intersectFogBox(Ray ray, out float t0, out float t1)
+{
+    return intersectAABB(ray, fogMin, fogMax, t0, t1);
 }
 
 Hit intersectRay(Ray ray)
 {
     Hit hitState;
-
     hitState.hit = false;
     hitState.isEmitter = false;
     hitState.distance = INF;
     hitState.meshId = -1;
-    float d;
 
+    // -------------------------
+    // MESHES ONLY
+    // -------------------------
     for (int m = 0; m < numMeshes; m++)
     {
         vec3 bmin = bvhAaBb[m].minBounds.xyz;
@@ -355,9 +307,6 @@ Hit intersectRay(Ray ray)
         int first = bvhNodes[m].firstIndex;
         int count = bvhNodes[m].triCount;
 
-        //IMPLEMENT HERE WHEN READY
-        Transform transMat;
-        //CREATE NEW RAY FOR TRANSOFRMED CHECK
         for (int i = 0; i < count; i++)
         {
             int baseIdx = (first + i) * 3;
@@ -381,7 +330,7 @@ Hit intersectRay(Ray ray)
                     hitState.distance = t;
                     hitState.meshId = m;
 
-                    hitState.pos = ray.origin + ray.dir * hitState.distance;
+                    hitState.pos = ray.origin + ray.dir * t;
 
                     vec3 n0 = vertexData[i0].normal.xyz;
                     vec3 n1 = vertexData[i1].normal.xyz;
@@ -398,49 +347,55 @@ Hit intersectRay(Ray ray)
                     vec3 t0 = vertexData[i0].tangent.xyz;
                     vec3 t1 = vertexData[i1].tangent.xyz;
                     vec3 t2 = vertexData[i2].tangent.xyz;
-                    
+
                     hitState.tangent = t0 * bary.x + t1 * bary.y + t2 * bary.z;
 
                     vec3 bt0 = vertexData[i0].bitangent.xyz;
                     vec3 bt1 = vertexData[i1].bitangent.xyz;
                     vec3 bt2 = vertexData[i2].bitangent.xyz;
-                    
+
                     hitState.bitangent = bt0 * bary.x + bt1 * bary.y + bt2 * bary.z;
-                }
-            }
-        }
 
-        for (int i = 0; i < numLights; i++)
-        {
-            float tLight = INF;
-            if (intersectLightSphere(ray, lights[i].pos.xyz, tLight))
-            {
-                if (tLight < hitState.distance)
-                {
-                    hitState.hit = true;
-                    hitState.distance = tLight;
-
-                    hitState.meshId = -2;
-
-                    hitState.pos = ray.origin + ray.dir * tLight;
-                    hitState.normal = normalize(hitState.pos - lights[i].pos.xyz);
-
-                    float d = length(hitState.pos - lights[i].pos.xyz);
-
-                    hitState.isEmitter = true;
-                    hitState.mat.baseColor = lights[i].color;
-                    hitState.mat.emission = lights[i].color.rgb * lights[i].color.a;
+                    vec4 baseCol = vec4(1.0);
+                    hitState.mat.baseColor = baseCol;
+                    hitState.mat.emission = vec3(0.0);
                     hitState.mat.opacity = 1.0;
-                    hitState.mat.reflection = 0.1;
+                    hitState.mat.reflection = 0.2;
                     hitState.mat.ior = 1.0;
-                    hitState.mat.baseColor.a = lights[i].color.a;
                 }
             }
         }
     }
 
-    // prevent light through wall
-    if (hitState.hit) { hitState.pos -= ray.dir * EPS; }
+    // -------------------------
+    // LIGHTS (SEPARATE PASS)
+    // -------------------------
+    for (int i = 0; i < numLights; i++)
+    {
+        float tLight;
+
+        if (intersectLightSphere(ray, lights[i].pos, tLight))
+        {
+            if (tLight < hitState.distance)
+            {
+                hitState.hit = true;
+                hitState.distance = tLight;
+
+                hitState.isEmitter = true;
+                hitState.meshId = -2;
+
+                hitState.pos = ray.origin + ray.dir * tLight;
+                hitState.normal = normalize(hitState.pos - lights[i].pos.xyz);
+
+                hitState.mat.baseColor = lights[i].color;
+                hitState.mat.emission = lights[i].color.rgb * lights[i].color.a;
+                hitState.mat.opacity = 1.0;
+                hitState.mat.reflection = 0.0;
+                hitState.mat.ior = 1.0;
+            }
+        }
+    }
+
     return hitState;
 }
 
@@ -457,13 +412,54 @@ Hit calculateShadow(vec3 pos, vec3 lightPos)
     return intersectRay(shadowRay);
 };
 
+/* ---------------- tracing ---------------- */
+
+vec3 fogTrace(Ray ray, float t0, float t1)
+{
+    float dt = (t1 - t0) / float(FOG_STEPS);
+
+    float trans = 1.0;
+    vec3 accum = vec3(0.0);
+
+    for (int i = 0; i < FOG_STEPS; i++)
+    {
+        float t = t0 + dt * (float(i) + 0.5);
+        vec3 p = ray.origin + ray.dir * t;
+
+        if (!insideFog(p)) continue;
+
+        float dens = fogDensity(p);
+        float absorb = dens * 0.25;
+
+        vec3 lightSum = vec3(0.0);
+
+        for (int j = 0; j < numLights; j++)
+        {
+            vec3 Lvec = lights[j].pos.xyz - p;
+            float d = length(Lvec);
+            vec3 L = Lvec / d;
+
+            float atten = lights[j].color.a /
+                (1.0 + 0.1 * d + 0.02 * d * d);
+
+            lightSum += lights[j].color.rgb * atten;
+        }
+
+        float phase = 1.0 / (4.0 * PI);
+
+        accum += trans * absorb * lightSum * phase * dt;
+        trans *= exp(-absorb * dt);
+    }
+
+    return accum;
+}
 
 vec3 lambertBRDF(Hit hit)
 {
-    return hit.mat.baseColor.rgb / PI;
+    return hit.mat.baseColor.rgb * (1.0 / PI);
 }
 
-vec3 directLight(Hit hit, vec3 viewDir)
+vec3 directLight(Hit hit)
 {
     vec3 result = vec3(0.0);
 
@@ -473,18 +469,26 @@ vec3 directLight(Hit hit, vec3 viewDir)
         float dist = length(Lvec);
         vec3 L = Lvec / dist;
 
-        // shadow
-        Hit shadow = calculateShadow(hit.pos, lights[i].pos.xyz);
+        Ray shadowRay;
+        shadowRay.origin = hit.pos + hit.normal * EPS;
+        shadowRay.dir = L;
+
+        Hit shadow = intersectRay(shadowRay);
+
         if (shadow.hit && shadow.distance < dist)
             continue;
 
         float ndotl = max(dot(hit.normal, L), 0.0);
 
-        float attenuation = lights[i].color.a / (1.0 + 0.2 * dist + 0.05 * dist * dist);
+        float attenuation =
+            lights[i].color.a /
+            (1.0 + 0.15 * dist + 0.04 * dist * dist);
 
         vec3 lightCol = lights[i].color.rgb * attenuation;
 
-        result += ndotl * lightCol * lambertBRDF(hit);
+        vec3 brdf = lambertBRDF(hit);
+
+        result += ndotl * lightCol * brdf;
     }
 
     return result;
@@ -495,101 +499,47 @@ vec3 trace(Ray ray)
     vec3 color = vec3(0.0);
     vec3 throughput = vec3(1.0);
 
-    float currentIOR = 1.0;
-
     for (int bounce = 0; bounce < MAX_DEPTH; bounce++)
     {
         Hit hit = intersectRay(ray);
-        if (!hit.hit)
-            break;
+        if (!hit.hit) break;
 
-        getMaterial(hit);
-
-        vec3 viewDir = normalize(-ray.dir);
-
-        // ----------------------------
-        // EMISSIVE SURFACES (if any)
-        // ----------------------------
         if (hit.isEmitter)
         {
             color += throughput * hit.mat.emission;
             break;
         }
+        applyMaterial(hit);
+        color += throughput * directLight(hit);
 
-        // ----------------------------
-        // DIRECT LIGHT (point lights fallback)
-        // ----------------------------
-        vec3 direct = vec3(0.0);
-
-        for (int i = 0; i < numLights; i++)
+        float t0, t1;
+        if (intersectFogBox(ray, t0, t1))
         {
-            vec3 Lvec = lights[i].pos.xyz - hit.pos;
-            float dist = length(Lvec);
-            vec3 L = Lvec / dist;
-
-            // shadow
-            Hit shadow = calculateShadow(hit.pos, lights[i].pos.xyz);
-            if (shadow.hit && shadow.distance < dist)
-                continue;
-
-            float ndotl = max(dot(hit.normal, L), 0.0);
-
-            float atten = lights[i].color.a /
-                (1.0 + 0.2 * dist + 0.05 * dist * dist);
-
-            vec3 lightCol = lights[i].color.rgb * atten;
-
-            direct += ndotl * lightCol * hit.mat.baseColor.rgb;
+            color += throughput * fogTrace(ray, t0, t1);
         }
 
-        color += throughput * direct;
-
-        // ----------------------------
-        // LIGHT VOLUME CONTRIBUTION
-        // ----------------------------
-        for (int i = 0; i < numLights; i++)
-        {
-            float t0, t1;
-
-            if (intersectLightVolume(ray, lights[i], t0, t1))
-            {
-                color += throughput * sampleLightVolume(ray, lights[i], t0, t1);
-            }
-        }
-
-        // ----------------------------
-        // SURFACE RESPONSE
-        // ----------------------------
-        float reflectProb = hit.mat.reflection;
-
-        vec3 reflectDir = reflect(ray.dir, hit.normal);
-        vec3 refractDir = refract(ray.dir, hit.normal, hit.mat.ior);
-
-        bool canRefract = length(refractDir) > EPS;
+        vec3 reflDir = reflect(ray.dir, hit.normal);
 
         float r = fract(sin(dot(hit.pos.xy, vec2(12.9898, 78.233))) * 43758.5453);
 
-        if (hit.mat.opacity < 0.99 && canRefract && r > reflectProb)
-        {
-            ray.dir = refractDir;
-            ray.origin = hit.pos + ray.dir * EPS;
-        }
-        else
-        {
-            ray.dir = reflectDir;
-            ray.origin = hit.pos + ray.dir * EPS;
-        }
+        vec3 diffuseDir = normalize(hit.normal + vec3(
+            fract(sin(dot(hit.pos, vec3(11.1, 22.2, 33.3))) * 43758.5453),
+            fract(sin(dot(hit.pos, vec3(44.4, 55.5, 66.6))) * 43758.5453),
+            fract(sin(dot(hit.pos, vec3(77.7, 88.8, 99.9))) * 43758.5453)
+        ));
 
-        // energy conservation-ish throughput
+        ray.dir = normalize(r < hit.mat.reflection ? reflDir : diffuseDir);
+        ray.origin = hit.pos + ray.dir * EPS;
+
         throughput *= hit.mat.baseColor.rgb;
 
-        // ----------------------------
-        // RUSSIAN ROULETTE (stability)
-        // ----------------------------
+        // IMPORTANT: only mild damping
+        throughput *= 0.95;
+
         if (bounce > 2)
         {
             float p = max(throughput.r, max(throughput.g, throughput.b));
-            if (fract(sin(float(bounce) * 12.989) * 43758.545) > p)
+            if (fract(sin(float(bounce) * 12.9898) * 43758.5453) > p)
                 break;
 
             throughput /= max(p, 0.001);
@@ -598,14 +548,14 @@ vec3 trace(Ray ray)
 
     return color;
 }
+/* ---------------- main ---------------- */
 
 void main()
 {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(img);
 
-    if (pixel.x >= size.x || pixel.y >= size.y)
-        return;
+    if (pixel.x >= size.x || pixel.y >= size.y) return;
 
     vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
     vec2 ndc = uv * 2.0 - 1.0;
@@ -618,6 +568,7 @@ void main()
     ray.origin = uCamPos;
     ray.dir = normalize(world.xyz - uCamPos);
     ray.energy = 1.0;
+
     vec3 col = trace(ray);
 
     imageStore(img, pixel, vec4(col, 1.0));
