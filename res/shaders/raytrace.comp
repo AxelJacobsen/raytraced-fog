@@ -51,6 +51,7 @@ struct Hit {
     bool isEmitter;
     float distance;
     int meshId;
+    int lightId;
 
     vec3 pos;
     vec3 normal;
@@ -59,6 +60,7 @@ struct Hit {
     vec3 bitangent;
 
     Material mat;
+    bool visibleLights[MAX_LIGHTS];
 };
 
 struct Light {
@@ -147,10 +149,10 @@ vec3 getNormals(Hit hit)
 
 void applyMaterial(inout Hit hit)
 {
-    if (hit.meshId < 0) return;
-
     vec4 baseCol = getTexture(hit);
-    hit.mat.baseColor = baseCol;
+    hit.mat.baseColor = baseCol; // stores texture behind lights, only solids
+
+    if (hit.meshId < 0) { return; };
     hit.mat.opacity = 1.0;
     hit.mat.ior = 1.5;
     hit.mat.reflection = 0.1;
@@ -210,10 +212,6 @@ bool intersectLightSphere(Ray ray, vec4 light, out float t)
     return t > 0.001;
 };
 
-bool insideFog(vec3 p)
-{
-    return all(greaterThan(p, fogMin)) && all(lessThan(p, fogMax));
-}
 
 bool intersectAABB(Ray ray, vec3 bmin, vec3 bmax, out float tminOut, out float tmaxOut)
 {
@@ -231,57 +229,43 @@ bool intersectAABB(Ray ray, vec3 bmin, vec3 bmax, out float tminOut, out float t
     return tmaxOut >= max(tminOut, 0.0);
 }
 
+bool insideFog(vec3 p)
+{
+    return all(greaterThan(p, fogMin)) && all(lessThan(p, fogMax));
+}
+
 float fogDensity(vec3 p)
 {
     float n = noise(p * 0.7 + float(frame) * 0.01);
     return smoothstep(0.35, 0.85, n);
 }
 
-float lightContribution(vec3 p, Light l)
-{
-    vec3 toL = l.pos.xyz - p;
-    float d = length(toL);
-    vec3 L = toL / d;
-
-    float atten = l.color.a / (1.0 + 0.15 * d + 0.05 * d * d);
-    float phase = max(dot(L, normalize(vec3(0.0, 1.0, 0.0))), 0.0);
-
-    return atten * phase;
-}
-
-float sampleFog(Ray ray, float t0, float t1)
-{
-    float dt = (t1 - t0) / float(FOG_STEPS);
-
-    float trans = 1.0;
-    float result = 0.0;
-
-    for (int i = 0; i < FOG_STEPS; i++)
-    {
-        float t = t0 + dt * (float(i) + 0.5);
-        vec3 p = ray.origin + ray.dir * t;
-
-        if (!insideFog(p)) continue;
-
-        float dens = fogDensity(p);
-        float absorb = dens * 0.3;
-
-        float lightSum = 0.0;
-        for (int j = 0; j < numLights; j++)
-        {
-            lightSum += lightContribution(p, lights[j]);
-        }
-
-        result += trans * absorb * lightSum * dt;
-        trans *= exp(-absorb * dt);
-    }
-
-    return result;
-}
-
 bool intersectFogBox(Ray ray, out float t0, out float t1)
 {
     return intersectAABB(ray, fogMin, fogMax, t0, t1);
+}
+// https://github.com/wsandst/gpu-raytracer/blob/master/src/shaders/pathtracer.comp
+float fresnelReflectAmount(vec3 incident, vec3 normal, float n1, float n2, float reflectivity)
+{
+    // Schlick aproximation
+    float r0 = (n1 - n2) / (n1 + n2);
+    r0 *= r0;
+    float cosX = -dot(normal, incident);
+    if (n1 > n2)
+    {
+        float n = n1 / n2;
+        float sinT2 = n * n * (1.0 - cosX * cosX);
+        // Total internal reflection
+        if (sinT2 > 1.0)
+            return 1.0;
+        cosX = sqrt(1.0 - sinT2);
+    }
+    float x = 1.0 - cosX;
+    float ret = r0 + (1.0 - r0) * x * x * x * x * x;
+
+    // adjust reflect multiplier for object reflectivity
+    ret = (reflectivity + (1.0 - reflectivity) * ret);
+    return ret;
 }
 
 Hit intersectRay(Ray ray)
@@ -292,9 +276,7 @@ Hit intersectRay(Ray ray)
     hitState.distance = INF;
     hitState.meshId = -1;
 
-    // -------------------------
-    // MESHES ONLY
-    // -------------------------
+    // MESHES
     for (int m = 0; m < numMeshes; m++)
     {
         vec3 bmin = bvhAaBb[m].minBounds.xyz;
@@ -329,6 +311,7 @@ Hit intersectRay(Ray ray)
                     hitState.hit = true;
                     hitState.distance = t;
                     hitState.meshId = m;
+                    hitState.lightId = 0;
 
                     hitState.pos = ray.origin + ray.dir * t;
 
@@ -367,31 +350,35 @@ Hit intersectRay(Ray ray)
         }
     }
 
-    // -------------------------
-    // LIGHTS (SEPARATE PASS)
-    // -------------------------
+    // LIGHTS
+    // TODO: STORE ALL VISIBLE LIGHTS FOR A GIVEN HIT
+    float meshDist = hitState.distance;
     for (int i = 0; i < numLights; i++)
     {
         float tLight;
 
         if (intersectLightSphere(ray, lights[i].pos, tLight))
         {
+            if (tLight < meshDist) {
+                hitState.visibleLights[i] = true;
+            }
             if (tLight < hitState.distance)
             {
                 hitState.hit = true;
                 hitState.distance = tLight;
 
                 hitState.isEmitter = true;
-                hitState.meshId = -2;
+                hitState.meshId = -hitState.meshId;
+                hitState.lightId = i;
 
                 hitState.pos = ray.origin + ray.dir * tLight;
                 hitState.normal = normalize(hitState.pos - lights[i].pos.xyz);
 
-                hitState.mat.baseColor = lights[i].color;
                 hitState.mat.emission = lights[i].color.rgb * lights[i].color.a;
                 hitState.mat.opacity = 1.0;
                 hitState.mat.reflection = 0.0;
                 hitState.mat.ior = 1.0;
+
             }
         }
     }
@@ -406,7 +393,7 @@ Hit calculateShadow(vec3 pos, vec3 lightPos)
     dir /= maxDist;
 
     Ray shadowRay;
-    shadowRay.origin = pos + dir * 0.001;
+    shadowRay.origin = pos + dir * EPS;
     shadowRay.dir = dir;
 
     return intersectRay(shadowRay);
@@ -429,7 +416,10 @@ vec3 fogTrace(Ray ray, float t0, float t1)
         if (!insideFog(p)) continue;
 
         float dens = fogDensity(p);
-        float absorb = dens * 0.25;
+
+        // --- Physically clearer coefficients ---
+        float sigma_s = dens * 0.25;   // scattering
+        float sigma_t = dens * 0.25;   // extinction (can tweak separately)
 
         vec3 lightSum = vec3(0.0);
 
@@ -439,16 +429,54 @@ vec3 fogTrace(Ray ray, float t0, float t1)
             float d = length(Lvec);
             vec3 L = Lvec / d;
 
+            // --- Geometry shadow ---
+            Hit h = calculateShadow(p, lights[j].pos.xyz);
+
+            // If something blocks before the light -> skip
+            if (h.hit && h.distance < d)
+                continue;
+
+            // --- Volumetric shadow (fog attenuation toward light) ---
+            float lightTrans = 1.0;
+
+            float shadowDt = d / float(FOG_STEPS);
+            float tShadow = 0.0;
+
+            for (int s = 0; s < FOG_STEPS; s++)
+            {
+                float ts = (float(s) + 0.5) * shadowDt;
+                vec3 ps = p + L * ts;
+
+                if (!insideFog(ps)) continue;
+
+                float densS = fogDensity(ps);
+                float sigma_tS = densS * 0.25;
+
+                lightTrans *= exp(-sigma_tS * shadowDt);
+
+                if (lightTrans < 0.01) break;
+            }
+
             float atten = lights[j].color.a /
                 (1.0 + 0.1 * d + 0.02 * d * d);
 
-            lightSum += lights[j].color.rgb * atten;
+            // --- Phase function (Henyey-Greenstein) ---
+            float g = 0.5; // try 0.0 -> isotropic, 0.5 -> foggy forward scatter
+            float mu = dot(ray.dir, L);
+            float phase = (1.0 - g * g) /
+                (4.0 * PI * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
+
+            lightSum += lights[j].color.rgb * atten * lightTrans * phase;
         }
 
-        float phase = 1.0 / (4.0 * PI);
+        accum += trans * sigma_s * lightSum * dt;
 
-        accum += trans * absorb * lightSum * phase * dt;
-        trans *= exp(-absorb * dt);
+        // Beer–Lambert attenuation along view ray
+        trans *= exp(-sigma_t * dt);
+
+        // Early exit
+        if (trans < 0.01)
+            break;
     }
 
     return accum;
@@ -459,8 +487,13 @@ vec3 lambertBRDF(Hit hit)
     return hit.mat.baseColor.rgb * (1.0 / PI);
 }
 
-vec3 directLight(Hit hit)
+
+
+vec3 blinnPhong(Hit hit, vec3 rayDir)
 {
+    vec3 N = normalize(hit.normal);
+    vec3 V = normalize(-rayDir);
+
     vec3 result = vec3(0.0);
 
     for (int i = 0; i < numLights; i++)
@@ -469,31 +502,40 @@ vec3 directLight(Hit hit)
         float dist = length(Lvec);
         vec3 L = Lvec / dist;
 
+        // Shadow test
         Ray shadowRay;
-        shadowRay.origin = hit.pos + hit.normal * EPS;
+        shadowRay.origin = hit.pos + N * EPS;
         shadowRay.dir = L;
 
         Hit shadow = intersectRay(shadowRay);
-
-        if (shadow.hit && shadow.distance < dist)
-            continue;
-
-        float ndotl = max(dot(hit.normal, L), 0.0);
+        //if (shadow.hit && shadow.distance < dist)
+            //continue;
 
         float attenuation =
             lights[i].color.a /
-            (1.0 + 0.15 * dist + 0.04 * dist * dist);
+            (1.0 + 0.1 * dist + 0.02 * dist * dist);
 
         vec3 lightCol = lights[i].color.rgb * attenuation;
 
-        vec3 brdf = lambertBRDF(hit);
+        // Diffuse (Lambert)
+        float ndotl = max(dot(N, L), 0.0);
+        vec3 diffuse = hit.mat.baseColor.rgb * ndotl;
 
-        result += ndotl * lightCol * brdf;
+        // Blinn-Phong specular
+        vec3 H = normalize(L + V);
+        float ndoth = max(dot(N, H), 0.0);
+
+        float shininess = 32.0; // tweakable
+        float spec = pow(ndoth, shininess);
+
+        vec3 specColor = vec3(1.0); // assume dielectric
+        vec3 specular = specColor * spec;
+
+        result += (diffuse + specular) * lightCol;
     }
 
     return result;
 }
-
 vec3 trace(Ray ray)
 {
     vec3 color = vec3(0.0);
@@ -501,41 +543,46 @@ vec3 trace(Ray ray)
 
     for (int bounce = 0; bounce < MAX_DEPTH; bounce++)
     {
+        for (int i = 0; i < MAX_LIGHTS; i++) {
+            hit.visibleLights[i] = false;
+        }
+
         Hit hit = intersectRay(ray);
-        if (!hit.hit) break;
+        if (!hit.hit)
+        {
+            break;
+        }
+
+        applyMaterial(hit);
 
         if (hit.isEmitter)
         {
-            color += throughput * hit.mat.emission;
+            float d = distance(lights[hit.lightId].pos.xyz, hit.pos);
+            float r = lights[hit.lightId].pos.w;
+
+            float attenuation = smoothstep(r, 0.0, d);
+            color += hit.mat.emission; // throughput* hit.mat.emission* attenuation;
+
             break;
         }
-        applyMaterial(hit);
-        color += throughput * directLight(hit);
 
+        // Blinn-Phong lighting
+        color += throughput * blinnPhong(hit, ray.dir);
+
+        // Fog
         float t0, t1;
         if (intersectFogBox(ray, t0, t1))
         {
             color += throughput * fogTrace(ray, t0, t1);
         }
 
-        vec3 reflDir = reflect(ray.dir, hit.normal);
-
-        float r = fract(sin(dot(hit.pos.xy, vec2(12.9898, 78.233))) * 43758.5453);
-
-        vec3 diffuseDir = normalize(hit.normal + vec3(
-            fract(sin(dot(hit.pos, vec3(11.1, 22.2, 33.3))) * 43758.5453),
-            fract(sin(dot(hit.pos, vec3(44.4, 55.5, 66.6))) * 43758.5453),
-            fract(sin(dot(hit.pos, vec3(77.7, 88.8, 99.9))) * 43758.5453)
-        ));
-
-        ray.dir = normalize(r < hit.mat.reflection ? reflDir : diffuseDir);
+        ray.dir = reflect(ray.dir, normalize(hit.normal));
         ray.origin = hit.pos + ray.dir * EPS;
+        throughput *= mix(hit.mat.baseColor.rgb, vec3(1.0), hit.mat.reflection);
 
-        throughput *= hit.mat.baseColor.rgb;
-
-        // IMPORTANT: only mild damping
         throughput *= 0.95;
-
+        /*
+        // Russian roulette
         if (bounce > 2)
         {
             float p = max(throughput.r, max(throughput.g, throughput.b));
@@ -543,7 +590,7 @@ vec3 trace(Ray ray)
                 break;
 
             throughput /= max(p, 0.001);
-        }
+        }*/
     }
 
     return color;
