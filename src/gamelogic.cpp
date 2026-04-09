@@ -104,7 +104,11 @@ void initGame(GLFWwindow* window) {
         glm::vec4(0.65,0.5,0.0, 2.0)});
     scene->lights.push_back({
         glm::vec4(0.0,5.0,0.0,1.5), 
-        glm::vec4(0.0,0.0,1.0, 2.0)});
+        glm::vec4(0.0,0.0,1.0, 2.0)});    
+    
+    scene->lights.push_back({
+        glm::vec4(10.0,6.0,3.0,0.5), 
+        glm::vec4(0.5,0.5,0.5, 5.0)});
 
     /*
     if (!torusMesh->loadFromFile("../res/models/torus.fbx")) {
