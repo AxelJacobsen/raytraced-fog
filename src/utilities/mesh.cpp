@@ -92,7 +92,6 @@ bool Mesh::loadFromFile(const std::string& path) {
             }
         }
 
-        // texture CONSIDER ADDING MORE, LIKE NORMALMAP
         aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
         aiString str;
 

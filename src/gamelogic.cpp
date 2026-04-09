@@ -22,7 +22,7 @@
 #include <glm/gtx/transform.hpp>
 
 struct MeshData {
-    glm::vec4 opRoIor;
+    glm::vec4 opRoIorNor;
 };
 
 
@@ -105,7 +105,6 @@ void initGame(GLFWwindow* window) {
     scene->lights.push_back({
         glm::vec4(0.0,5.0,0.0,1.5), 
         glm::vec4(0.0,0.0,1.0, 2.0)});    
-    
     scene->lights.push_back({
         glm::vec4(10.0,6.0,3.0,0.5), 
         glm::vec4(0.5,0.5,0.5, 5.0)});
@@ -135,11 +134,12 @@ void initGame(GLFWwindow* window) {
     //scene->meshes.push_back(sphereMesh);
     //scene->meshes.push_back(torusMesh);
     scene->meshes.push_back(mapMesh);
-    allMeshDatas.push_back({ glm::vec4(1.0, 0.9, 0.0, 0.0) });
+    allMeshDatas.push_back({ glm::vec4(1.0, 0.95, 0.0, -1.0) });
     scene->meshes.push_back(supportMesh);
-    allMeshDatas.push_back({ glm::vec4(1.0, 0.9, 0.0, 0.0) });
+    allMeshDatas.push_back({ glm::vec4(1.0, 0.95, 0.0, -1.0) });
     scene->meshes.push_back(crystalMesh);
-    allMeshDatas.push_back({ glm::vec4(0.1, 0.0, 1.5, 0.0) });
+    allMeshDatas.push_back({ glm::vec4(0.1, 0.02, 1.6, 0.0) });
+
     scene->generateTextureArray(0);
     scene->generateTextureArray(1);
 

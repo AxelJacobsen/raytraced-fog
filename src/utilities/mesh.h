@@ -20,6 +20,7 @@ public:
     std::vector<uint32_t> indices;
     std::vector<Texture> textures;
     std::vector<Texture> normals;
+    std::vector<glm::vec3> simpleNormals;
     int texId;
 
     bool loadFromFile(const std::string& path);
