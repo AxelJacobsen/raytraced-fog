@@ -35,6 +35,7 @@ struct Ray {
     vec3 origin;
     vec3 dir;
     float energy;
+    float distance;
 };
 
 struct Material {
@@ -43,7 +44,7 @@ struct Material {
 
     float ior;
     float opacity;
-    float reflection;
+    float roughness;
 };
 
 struct Hit {
@@ -68,23 +69,33 @@ struct Light {
     vec4 color;
 };
 
+struct MeshData {
+    vec4 opRoIor; //Opacity, roughness, Index of refection
+};
+
+struct AnimTransform {
+    vec3 pos;
+    mat3 rot;
+};
+
 layout(std430, binding = 1) buffer BVHNodes { BVHNode bvhNodes[]; };
 layout(std430, binding = 2) buffer VertexBuffer { Vertex vertexData[]; };
 layout(std430, binding = 3) buffer IndexBuffer { uint indices[]; };
 layout(std430, binding = 4) buffer boundsBuffer { AABB bvhAaBb[]; };
 layout(std430, binding = 5) buffer lightBuffer { Light lights[]; };
+layout(std430, binding = 9) buffer meshDataBuffer { MeshData meshData[]; };
 
 layout(location = 1) uniform int numMeshes;
 layout(location = 2) uniform int numLights;
-layout(location = 3) uniform int frame;
+layout(location = 3) uniform int time;
 
 layout(binding = 6) uniform sampler2DArray texArray;
 layout(binding = 7) uniform sampler2DArray normalsArray;
 uniform vec3 uCamPos;
 uniform mat4 uInvPV;
 
-vec3 fogMin = vec3(-5.0);
-vec3 fogMax = vec3(5.0);
+vec3 fogMin = vec3(-60.0, -10.0, -10.0);
+vec3 fogMax = vec3(10.0, 2.0, 10.0);
 
 float hash(vec3 p)
 {
@@ -153,9 +164,9 @@ void applyMaterial(inout Hit hit)
     hit.mat.baseColor = baseCol; // stores texture behind lights, only solids
 
     if (hit.meshId < 0) { return; };
-    hit.mat.opacity = 1.0;
-    hit.mat.ior = 1.5;
-    hit.mat.reflection = 0.1;
+    hit.mat.opacity = meshData[hit.meshId].opRoIor.x;
+    hit.mat.roughness = meshData[hit.meshId].opRoIor.y;
+    hit.mat.ior = meshData[hit.meshId].opRoIor.z;
 
     vec3 nrmMap = getNormals(hit);
 
@@ -167,6 +178,48 @@ void applyMaterial(inout Hit hit)
 
     hit.normal = normalize(tbn * nrmMap);
 }
+
+AnimTransform getAnim(float time)
+{
+    AnimTransform t;
+
+    // --- bobbing motion ---
+    float bob = sin(time * 2.0) * (0.3 + 0.2 * sin(time * 0.5));
+
+    t.pos = vec3(0.0, bob, 0.0);
+
+    // --- rotation around Y ---
+    float angle = time * 1.5; // speed
+
+    float c = cos(angle);
+    float s = sin(angle);
+
+    t.rot = mat3(
+        c, 0.0, -s,
+        0.0, 1.0, 0.0,
+        s, 0.0, c
+    );
+
+    return t;
+}
+
+void transformRayInverse(
+    in vec3 ro,
+    in vec3 rd,
+    in AnimTransform t,
+    out vec3 ro2,
+    out vec3 rd2
+)
+{
+    // undo translation
+    ro -= t.pos;
+
+    // undo rotation (transpose = inverse for rotation matrices)
+    ro2 = transpose(t.rot) * ro;
+    rd2 = transpose(t.rot) * rd;
+}
+
+
 
 bool intersectTriangle(Ray ray, vec3 v0, vec3 v1, vec3 v2, out float t, out vec3 bary) {
     vec3 e1 = v1 - v0;
@@ -193,7 +246,7 @@ bool intersectTriangle(Ray ray, vec3 v0, vec3 v1, vec3 v2, out float t, out vec3
     return t > EPS;
 };
 
-bool intersectLightSphere(Ray ray, vec4 light, out float t)
+bool intersectLightSphere(Ray ray, vec4 light, out float t, out float tClosest)
 {
     vec3 oc = ray.origin - light.xyz;
 
@@ -209,8 +262,12 @@ bool intersectLightSphere(Ray ray, vec4 light, out float t)
     float t1 = (-b + s) / (2.0 * a);
 
     t = (t0 > 0.001) ? t0 : t1;
-    return t > 0.001;
-};
+    if (t <= 0.001) return false;
+
+    tClosest = -dot(oc, ray.dir) / a;
+
+    return true;
+}
 
 
 bool intersectAABB(Ray ray, vec3 bmin, vec3 bmax, out float tminOut, out float tmaxOut)
@@ -236,7 +293,7 @@ bool insideFog(vec3 p)
 
 float fogDensity(vec3 p)
 {
-    float n = noise(p * 0.7 + float(frame) * 0.01);
+    float n = noise(p * 0.7 + float(time) * 0.01);
     return smoothstep(0.35, 0.85, n);
 }
 
@@ -244,6 +301,7 @@ bool intersectFogBox(Ray ray, out float t0, out float t1)
 {
     return intersectAABB(ray, fogMin, fogMax, t0, t1);
 }
+
 // https://github.com/wsandst/gpu-raytracer/blob/master/src/shaders/pathtracer.comp
 float fresnelReflectAmount(vec3 incident, vec3 normal, float n1, float n2, float reflectivity)
 {
@@ -343,7 +401,7 @@ Hit intersectRay(Ray ray)
                     hitState.mat.baseColor = baseCol;
                     hitState.mat.emission = vec3(0.0);
                     hitState.mat.opacity = 1.0;
-                    hitState.mat.reflection = 0.2;
+                    hitState.mat.roughness = 0.2;
                     hitState.mat.ior = 1.0;
                 }
             }
@@ -351,34 +409,24 @@ Hit intersectRay(Ray ray)
     }
 
     // LIGHTS
-    // TODO: STORE ALL VISIBLE LIGHTS FOR A GIVEN HIT
-    float meshDist = hitState.distance;
     for (int i = 0; i < numLights; i++)
     {
         float tLight;
-
-        if (intersectLightSphere(ray, lights[i].pos, tLight))
+        float tCenter;
+        if (intersectLightSphere(ray, lights[i].pos, tLight, tCenter))
         {
-            if (tLight < meshDist) {
-                hitState.visibleLights[i] = true;
-            }
+            float d = abs(distance(lights[i].pos.xyz, ray.origin + ray.dir * tCenter));
+            float r = lights[i].pos.w;
+            float attenuation = smoothstep(1.0, 0.0, d / r);
+            hitState.mat.emission += lights[i].color.rgb * lights[i].color.a * attenuation;
+
             if (tLight < hitState.distance)
             {
                 hitState.hit = true;
                 hitState.distance = tLight;
-
                 hitState.isEmitter = true;
                 hitState.meshId = -hitState.meshId;
                 hitState.lightId = i;
-
-                hitState.pos = ray.origin + ray.dir * tLight;
-                hitState.normal = normalize(hitState.pos - lights[i].pos.xyz);
-
-                hitState.mat.emission = lights[i].color.rgb * lights[i].color.a;
-                hitState.mat.opacity = 1.0;
-                hitState.mat.reflection = 0.0;
-                hitState.mat.ior = 1.0;
-
             }
         }
     }
@@ -418,8 +466,8 @@ vec3 fogTrace(Ray ray, float t0, float t1)
         float dens = fogDensity(p);
 
         // --- Physically clearer coefficients ---
-        float sigma_s = dens * 0.25;   // scattering
-        float sigma_t = dens * 0.25;   // extinction (can tweak separately)
+        float sigma_s = dens * 2.0;   // scattering
+        float sigma_t = dens * 1.0;   // extinction (can tweak separately)
 
         vec3 lightSum = vec3(0.0);
 
@@ -487,6 +535,23 @@ vec3 lambertBRDF(Hit hit)
     return hit.mat.baseColor.rgb * (1.0 / PI);
 }
 
+bool isVisibleLight(vec3 pos, vec3 normal, Light light)
+{
+    vec3 toLight = light.pos.xyz - pos;
+    float distToLight = length(toLight);
+    vec3 dirToLight = normalize(toLight);
+
+    Ray shadowRay;
+    shadowRay.origin = pos + normal * EPS;
+    shadowRay.dir = dirToLight;
+
+    Hit shadowHit = intersectRay(shadowRay);
+
+    if (shadowHit.hit && shadowHit.distance < distToLight)
+        return false;
+
+    return true;
+}
 
 
 vec3 blinnPhong(Hit hit, vec3 rayDir)
@@ -507,10 +572,6 @@ vec3 blinnPhong(Hit hit, vec3 rayDir)
         shadowRay.origin = hit.pos + N * EPS;
         shadowRay.dir = L;
 
-        Hit shadow = intersectRay(shadowRay);
-        //if (shadow.hit && shadow.distance < dist)
-            //continue;
-
         float attenuation =
             lights[i].color.a /
             (1.0 + 0.1 * dist + 0.02 * dist * dist);
@@ -528,7 +589,7 @@ vec3 blinnPhong(Hit hit, vec3 rayDir)
         float shininess = 32.0; // tweakable
         float spec = pow(ndoth, shininess);
 
-        vec3 specColor = vec3(1.0); // assume dielectric
+        vec3 specColor = vec3(2.0); // assume dielectric
         vec3 specular = specColor * spec;
 
         result += (diffuse + specular) * lightCol;
@@ -536,6 +597,7 @@ vec3 blinnPhong(Hit hit, vec3 rayDir)
 
     return result;
 }
+
 vec3 trace(Ray ray)
 {
     vec3 color = vec3(0.0);
@@ -543,27 +605,19 @@ vec3 trace(Ray ray)
 
     for (int bounce = 0; bounce < MAX_DEPTH; bounce++)
     {
-        for (int i = 0; i < MAX_LIGHTS; i++) {
-            hit.visibleLights[i] = false;
-        }
-
         Hit hit = intersectRay(ray);
         if (!hit.hit)
         {
             break;
         }
 
+        ray.distance += hit.distance;
+
         applyMaterial(hit);
 
         if (hit.isEmitter)
         {
-            float d = distance(lights[hit.lightId].pos.xyz, hit.pos);
-            float r = lights[hit.lightId].pos.w;
-
-            float attenuation = smoothstep(r, 0.0, d);
-            color += hit.mat.emission; // throughput* hit.mat.emission* attenuation;
-
-            break;
+            color += throughput * hit.mat.emission / 1-(bounce/MAX_DEPTH);
         }
 
         // Blinn-Phong lighting
@@ -573,24 +627,14 @@ vec3 trace(Ray ray)
         float t0, t1;
         if (intersectFogBox(ray, t0, t1))
         {
-            color += throughput * fogTrace(ray, t0, t1);
+            color += throughput * fogTrace(ray, t0, t1); // *(1.0 - hit.mat.roughness);
         }
 
         ray.dir = reflect(ray.dir, normalize(hit.normal));
         ray.origin = hit.pos + ray.dir * EPS;
-        throughput *= mix(hit.mat.baseColor.rgb, vec3(1.0), hit.mat.reflection);
+        //throughput *= mix(hit.mat.baseColor.rgb, vec3(1.0), hit.mat.roughness);
 
-        throughput *= 0.95;
-        /*
-        // Russian roulette
-        if (bounce > 2)
-        {
-            float p = max(throughput.r, max(throughput.g, throughput.b));
-            if (fract(sin(float(bounce) * 12.9898) * 43758.5453) > p)
-                break;
-
-            throughput /= max(p, 0.001);
-        }*/
+        throughput *= 0.9;
     }
 
     return color;

@@ -21,6 +21,10 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/transform.hpp>
 
+struct MeshData {
+    glm::vec4 opRoIor;
+};
+
 
 Fog::Shader* shader;
 Fog::Shader* compShader;
@@ -33,16 +37,13 @@ Mesh* torusMesh = new Mesh();
 Mesh* sphereMesh = new Mesh();
 Mesh* mapMesh = new Mesh();
 Mesh* supportMesh = new Mesh();
-Mesh* lampMesh = new Mesh();
+Mesh* crystalMesh = new Mesh();
 
 std::vector<Vertex> allVertices;
 std::vector<uint32_t> allIndices;
 std::vector<BVHNode> allNodes;
 std::vector<AABB> allBounds;
-
-const float debug_startTime = 0;
-double totalElapsedTime = debug_startTime;
-double gameElapsedTime = debug_startTime;
+std::vector<MeshData> allMeshDatas;
 
 double lastMouseX = windowWidth / 2;
 double lastMouseY = windowHeight / 2;
@@ -120,18 +121,21 @@ void initGame(GLFWwindow* window) {
     
     if (!supportMesh->loadFromFile("../res/models/mineSupport.glb")) {
         std::cout << "Error in loading support" << std::endl;
-    };    
+    };       
     
-    if (!lampMesh->loadFromFile("../res/models/mineLamp.glb")) {
-        std::cout << "Error in loading lamp" << std::endl;
-    };
+    if (!crystalMesh->loadFromFile("../res/models/mineCrystal.glb")) {
+        std::cout << "Error in loading support" << std::endl;
+    };    
 
 
     //scene->meshes.push_back(sphereMesh);
     //scene->meshes.push_back(torusMesh);
     scene->meshes.push_back(mapMesh);
+    allMeshDatas.push_back({ glm::vec4(1.0, 0.9, 0.0, 0.0) });
     scene->meshes.push_back(supportMesh);
-    scene->meshes.push_back(lampMesh);
+    allMeshDatas.push_back({ glm::vec4(1.0, 0.9, 0.0, 0.0) });
+    scene->meshes.push_back(crystalMesh);
+    allMeshDatas.push_back({ glm::vec4(0.1, 0.0, 1.5, 0.0) });
     scene->generateTextureArray(0);
     scene->generateTextureArray(1);
 
@@ -250,6 +254,15 @@ void initGame(GLFWwindow* window) {
     glBindTextureUnit(6, scene->texId);
     glBindTextureUnit(7, scene->normalTexId);
 
+    GLuint meshDataBuffer;
+    glGenBuffers(1, &meshDataBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, meshDataBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+        allMeshDatas.size() * sizeof(MeshData),
+        allMeshDatas.data(),
+        GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, meshDataBuffer);
+
     glUniform1i(1, scene->meshes.size());
     glUniform1i(2, scene->lights.size());
     
@@ -312,8 +325,7 @@ void compute() {
     glUniform3fv(glGetUniformLocation(compShader->get(), "uCamPos"), 1, &camera->pos[0]);
     glUniformMatrix4fv(glGetUniformLocation(compShader->get(), "uInvPV"), 1, GL_FALSE, &camera->invPV[0][0]);
 
-    glUniform1i(3, camera->frame);
-    camera->frame++;
+    glUniform1i(3, glfwGetTime());
 
     glDispatchCompute(
         (GLuint)(windowWidth / 16 + 1),
@@ -346,19 +358,6 @@ void drawDebug()
     glUniformMatrix4fv(viewLoc, 1, GL_FALSE, &camera->view[0][0]);
     glUniformMatrix4fv(projLoc, 1, GL_FALSE, &camera->projection[0][0]);
 
-    /*
-    // Draw all meshes
-    for (const auto& mesh : meshInfos)
-    {
-        glDrawElementsBaseVertex(
-            GL_TRIANGLES,
-            mesh.indexCount,
-            GL_UNSIGNED_INT,
-            (void*)(mesh.indexOffset * sizeof(uint32_t)),
-            mesh.vertexOffset
-        );
-    }*/
-
     glDrawElements(GL_TRIANGLES, allIndices.size(), GL_UNSIGNED_INT, 0);
     glBindVertexArray(0);
     debugShader->deactivate();
@@ -369,14 +368,10 @@ void renderFrame(GLFWwindow* window) {
     glfwGetWindowSize(window, &windowWidth, &windowHeight);
     glViewport(0, 0, windowWidth, windowHeight);
     if (computeView) {
-       // glDisable(GL_DEPTH_TEST);
         compute();
         drawComp();
-        //std::cout << "COMP" << std::endl;
     }
     else {
-        //glEnable(GL_DEPTH_TEST);
         drawDebug();
-        //std::cout << "DEBUG" << std::endl;
     }
 }
