@@ -9,8 +9,9 @@ layout(rgba32f, binding = 0) uniform image2D img;
 #define INF 1e30
 #define EPS 0.0003
 #define MAX_DEPTH 4
+#define MAX_LIGHT_DIST 12
 
-#define FOG_STEPS 10
+#define FOG_STEPS 5
 
 struct Vertex {
     vec4 position;
@@ -299,6 +300,8 @@ float fogDensity(vec3 p)
 
 bool intersectFogBox(Ray ray, out float t0, out float t1)
 {
+    if (insideFog(uCamPos))
+        return true;
     return intersectAABB(ray, fogMin, fogMax, t0, t1);
 }
 
@@ -461,13 +464,19 @@ vec3 fogTrace(Ray ray, float t0, float t1)
         float t = t0 + dt * (float(i) + 0.5);
         vec3 p = ray.origin + ray.dir * t;
 
-        if (!insideFog(p)) continue;
+        if (!insideFog(p))
+        {
+            trans *= exp(-fogDensity(p) * dt); // optional edge extinction
+            continue;
+        }
 
-        float dens = fogDensity(p);
+        float dens = max(fogDensity(p), 0.0);
 
-        // --- Physically clearer coefficients ---
-        float sigma_s = dens * 2.0;   // scattering
-        float sigma_t = dens * 1.0;   // extinction (can tweak separately)
+        float sigma_s = dens * 1.0;
+        float sigma_a = dens * 0.1;
+        float sigma_t = sigma_s + sigma_a;
+
+        // IMPORTANT: do NOT skip lighting based on trans
 
         vec3 lightSum = vec3(0.0);
 
@@ -477,53 +486,51 @@ vec3 fogTrace(Ray ray, float t0, float t1)
             float d = length(Lvec);
             vec3 L = Lvec / d;
 
-            // --- Geometry shadow ---
+            // geometry shadow
             Hit h = calculateShadow(p, lights[j].pos.xyz);
-
-            // If something blocks before the light -> skip
             if (h.hit && h.distance < d)
                 continue;
 
-            // --- Volumetric shadow (fog attenuation toward light) ---
             float lightTrans = 1.0;
 
-            float shadowDt = d / float(FOG_STEPS);
-            float tShadow = 0.0;
+            int shadowSteps = clamp(int(d / dt), 4, FOG_STEPS);
+            float shadowDt = d / float(shadowSteps);
 
-            for (int s = 0; s < FOG_STEPS; s++)
+            for (int s = 0; s < shadowSteps; s++)
             {
                 float ts = (float(s) + 0.5) * shadowDt;
-                vec3 ps = p + L * ts;
+                vec3 ps = p + L * ts + 1e-3 * L;
 
                 if (!insideFog(ps)) continue;
 
-                float densS = fogDensity(ps);
-                float sigma_tS = densS * 0.25;
+                float densS = max(fogDensity(ps), 0.0);
+                float sigma_tS = densS * 1.1;
 
                 lightTrans *= exp(-sigma_tS * shadowDt);
 
-                if (lightTrans < 0.01) break;
+                if (lightTrans < 0.01)
+                    break;
             }
 
             float atten = lights[j].color.a /
                 (1.0 + 0.1 * d + 0.02 * d * d);
 
-            // --- Phase function (Henyey-Greenstein) ---
-            float g = 0.5; // try 0.0 -> isotropic, 0.5 -> foggy forward scatter
-            float mu = dot(ray.dir, L);
+            float g = 0.5;
+            float mu = dot(-ray.dir, L);
             float phase = (1.0 - g * g) /
                 (4.0 * PI * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
 
             lightSum += lights[j].color.rgb * atten * lightTrans * phase;
         }
 
-        accum += trans * sigma_s * lightSum * dt;
+        // IMPORTANT: always accumulate scattering contribution
+        vec3 scatter = sigma_s * lightSum;
 
-        // Beer–Lambert attenuation along view ray
+        accum += trans * scatter * dt;
+
         trans *= exp(-sigma_t * dt);
 
-        // Early exit
-        if (trans < 0.01)
+        if (trans < 0.001)
             break;
     }
 
