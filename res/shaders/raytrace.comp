@@ -128,6 +128,16 @@ float noise(vec3 p)
     return mix(nxy0, nxy1, u.z);
 }
 
+float noiseTwo(vec3 x)
+{
+    vec3 f = fract(x);
+    float n = dot(floor(x), vec3(1.0, 157.0, 113.0));
+    return mix(mix(mix(hash(vec3(n + 0.0)), hash(vec3(n + 1.0)), f.x),
+        mix(hash(vec3(n + 157.0)), hash(vec3(n + 158.0)), f.x), f.y),
+        mix(mix(hash(vec3(n + 113.0)), hash(vec3(n + 114.0)), f.x),
+            mix(hash(vec3(n + 270.0)), hash(vec3(n + 271.0)), f.x), f.y), f.z);
+}
+
 vec4 getTexture(Hit hit)
 {
     vec4 tex = texture(
@@ -475,10 +485,15 @@ bool insideFog(vec3 p)
     return all(greaterThan(p, fogMin)) && all(lessThan(p, fogMax));
 }
 
-float fogDensity(vec3 p)
+float fogDensity(vec3 p, bool flip)
 {
-    float n = noise(p * 0.7 + float(time) * 0.01);
-    return smoothstep(0.35, 0.85, n);
+    if (flip)
+    {
+        float n = noise(p * 0.7 + float(time) * 0.01);
+        return smoothstep(0.35, 0.85, n);
+    }
+    float flop = noiseTwo(p * 0.01);
+    return smoothstep(0.35, 0.85, flop);
 }
 
 vec3 fogTrace(Ray ray, float t0, float t1)
@@ -493,7 +508,7 @@ vec3 fogTrace(Ray ray, float t0, float t1)
         float t = t0 + dt * (float(i));
         vec3 p = ray.origin + normalize(ray.dir) * t;
 
-        float dens =  max(fogDensity(p), 0.2);
+        float dens =  max(fogDensity(p, true), 0.2);
 
         float sigma_s = dens * 1.0;
         float sigma_a = dens * 0.1;
@@ -511,32 +526,32 @@ vec3 fogTrace(Ray ray, float t0, float t1)
             if (shadowHit.hit && !shadowHit.isEmitter)
                 continue;
 
-            float lightDist = length(Lvec);
-            float dtL = lightDist / float(FOG_STEPS);
-
-            float opticalDepth = 0.0;
+            float dl = length(Lvec) / FOG_STEPS;
 
             for (int l = 0; l < FOG_STEPS; l++)
             {
-                float tl = dtL * (float(l) + 0.5); // midpoint sampling
-                vec3 pl = p + L * tl;
+                //Implement light obscure steps here
+                float tl = dl * (float(l));
+                vec3 lp = p + L * tl;
 
-                float densL = max(fogDensity(pl), 0.0);
-
-                float sigma_tL = densL * (1.0 + 0.1); // same as sigma_s + sigma_a
-                opticalDepth += sigma_tL * dtL;
+                float light_dens = max(fogDensity(lp, false), 0.2);
+                float light_sigma_s = dens * 1.0;
+                float light_sigma_a = dens * 0.1;
+                sigma_t += sigma_s + sigma_a;
             }
 
-            float lightTrans = exp(-opticalDepth);
+            float attenuation = lightAttenuation(lights[j], p);
 
             // Henyey-Greenstein phase
             float g = 0.5;
             float mu = dot(V, L);
             float phase = (1.0 - g * g) /
                 (4.0 * PI * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
-            //lighting += mix(lights[j].color.rgb * phase, vec3(0.001), attenuation);
-            lighting += lights[j].color.rgb * phase * lightTrans;
+            
+            lighting += mix(lights[j].color.rgb * phase, vec3(0.001), 1-attenuation);
         }
+
+        sigma_t = sigma_t / (FOG_STEPS * numLights);
 
         float stepTrans = exp(-sigma_t * dt);
         float scatter = (1.0 - stepTrans);
@@ -581,11 +596,11 @@ vec3 trace(Ray ray)
 
         // FOG
         float t0, t1;
-        if (intersectAABB(ray, fogMin, fogMax, t0, t1))
+        if (intersectAABB(ray, fogMin, fogMax, t0, t1) && hit.distance >= t0)
         {
-            float tStart = max(t0, 0.0);
-            float tEnd = min(t1, hit.distance);
-            color += throughput * fogTrace(ray, tStart, tEnd);
+                float tStart = max(t0, 0.0);
+                float tEnd = min(t1, hit.distance);
+                color += throughput * fogTrace(ray, tStart, tEnd);
         }
 
         // ENTER / EXIT
