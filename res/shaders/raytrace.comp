@@ -173,12 +173,11 @@ bool getNormals(Hit hit, inout vec3 newNormals)
 void applyMaterial(inout Hit hit)
 {
     vec4 baseCol = vec4(1.0);
-    if (meshData[hit.meshId].opRoIorNor.a < 0) {
+    if (meshData[hit.meshId].opRoIorNor.a < 0.0) {
         baseCol = getTexture(hit);
     }
     hit.mat.baseColor = baseCol;
-
-    if (hit.meshId < 0) { return; };
+    
     hit.mat.opacity = meshData[hit.meshId].opRoIorNor.x;
     hit.mat.roughness = meshData[hit.meshId].opRoIorNor.y;
     hit.mat.ior = meshData[hit.meshId].opRoIorNor.z;
@@ -394,7 +393,6 @@ Hit intersectRay(Ray ray)
                     hitState.mat.opacity = meshData[m].opRoIorNor.x;
                     hitState.mat.roughness = meshData[m].opRoIorNor.y;
                     hitState.mat.ior = meshData[m].opRoIorNor.z;
-                    hitState.meshId = m;
                 }
             }
         }
@@ -415,9 +413,7 @@ Hit intersectRay(Ray ray)
             if (tLight < hitState.distance)
             {
                 hitState.hit = true;
-                //hitState.distance = tLight; REMOVED PENDING BUGCHECK, FIXED FOG LIGHTS
                 hitState.isEmitter = true;
-                hitState.meshId = -abs(hitState.meshId);
                 hitState.lightId = i;
             }
         }
