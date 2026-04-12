@@ -13,7 +13,7 @@ layout(rgba32f, binding = 0) uniform image2D img;
 #define FOG_STEPS 10
 #define MAX_PHOTONS 128
 
-#define DO_FOG 0
+#define DO_FOG 1
 #define DO_LOCAL 1
 #define DO_LOCAL_BOUNCE 0 // Should be 0 according to Whitted
 
@@ -172,7 +172,7 @@ vec4 getTexture(Hit hit)
 
 bool getNormals(Hit hit, inout vec3 newNormals)
 {
-    if (meshData[hit.meshId].opRoIorNor.a >= 0) {
+    if (meshData[hit.meshDatId].opRoIorNor.a >= 0) {
         return false;
     }
 
@@ -191,7 +191,7 @@ bool getNormals(Hit hit, inout vec3 newNormals)
 
 void getRoughness(Hit hit, inout float roughness)
 {
-    if (meshData[hit.meshId].opRoIorNor.a >= 0) {
+    if (meshData[hit.meshDatId].opRoIorNor.a >= 0) {
         return;
     }
     roughness = texture(
@@ -204,15 +204,15 @@ void getRoughness(Hit hit, inout float roughness)
 void applyMaterial(inout Hit hit)
 {
     vec4 baseCol = meshData[hit.meshDatId].color;
-    if (meshData[hit.meshId].opRoIorNor.a < 0.0) {
+    if (meshData[hit.meshDatId].opRoIorNor.a < 0.0) {
         baseCol = getTexture(hit);
     }
     hit.mat.baseColor = baseCol;
     
-    hit.mat.opacity = meshData[hit.meshId].opRoIorNor.x;
-    hit.mat.ior = meshData[hit.meshId].opRoIorNor.z;
+    hit.mat.opacity = meshData[hit.meshDatId].opRoIorNor.x;
+    hit.mat.ior = meshData[hit.meshDatId].opRoIorNor.z;
 
-    float roughness = meshData[hit.meshId].opRoIorNor.y;
+    float roughness = meshData[hit.meshDatId].opRoIorNor.y;
     getRoughness(hit, roughness);
     hit.mat.roughness = roughness;
 
@@ -477,7 +477,7 @@ Hit intersectRay(Ray ray)
             }
         }
     }
-
+    float meshDist = hitState.distance;
     // LIGHTS
     for (int i = 0; i < numLights; i++)
     {
@@ -488,7 +488,8 @@ Hit intersectRay(Ray ray)
             float d = abs(distance(lights[i].pos.xyz, ray.origin + ray.dir * tCenter));
             float r = lights[i].pos.w;
             float attenuation = smoothstep(1.0, 0.0, d / r);
-            hitState.mat.emission += lights[i].color.rgb * lights[i].color.a * attenuation;
+            if (tLight < meshDist)
+                hitState.mat.emission += lights[i].color.rgb * lights[i].color.a * attenuation;
 
             if (tLight < hitState.distance)
             {
@@ -608,6 +609,9 @@ vec3 fogTrace(Ray ray, float t0, float t1)
 
         for (int j = 0; j < numLights; j++)
         {
+            float attenuation = lightAttenuation(lights[j], p);
+            if (attenuation < 0.01) continue;
+
             vec3 Lvec = lights[j].pos.xyz - p;
             vec3 L = normalize(Lvec);
 
@@ -628,7 +632,6 @@ vec3 fogTrace(Ray ray, float t0, float t1)
                 sigma_t += sigma_s + sigma_a;
             }
 
-            float attenuation = lightAttenuation(lights[j], p);
 
             // Henyey-Greenstein phase
             float g = 0.5;

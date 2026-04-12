@@ -102,8 +102,8 @@ void initGame(GLFWwindow* window) {
     debugShader->makeBasicShader("../res/shaders/debug.vert", "../res/shaders/debug.frag");
 
     scene->lights.push_back({
-        glm::vec4(-20.0,4.0,0.0,2.0), 
-        glm::vec4(0.9,0.7,0.3, 2.0)});
+        glm::vec4(-26.0,6.5,4,1.0), 
+        glm::vec4(0.9,0.7,0.3, 3.0)});
     scene->lights.push_back({
         glm::vec4(0.0,5.0,0.0,1.5), 
         glm::vec4(0.4,0.4,1.0, 2.0)});    
@@ -145,6 +145,8 @@ void initGame(GLFWwindow* window) {
         glm::vec4(0.0, 0.0, 0.0, 0.0),
         glm::vec4(0.0, 0.0, 0.0, 0.0)
         });
+
+    //Supports
     scene->meshes.push_back(supportMesh);
     allMeshDatas.push_back({
         glm::vec4(1.0, 0.95, 0.0, -1.0),
@@ -152,6 +154,22 @@ void initGame(GLFWwindow* window) {
         glm::vec4(0.0, 0.0, 0.0, 0.0),
         glm::vec4(1.0, 0.0, 0.0, 0.0)
         });
+    
+    allMeshDatas.push_back({
+        glm::vec4(1.0, 0.95, 0.0, -1.0),
+        glm::vec4(0.0, 0.0, 0.0, 0.0),
+        glm::vec4(25.0, 0.0, 0.0, 0.0),
+        glm::vec4(1.0, 0.0, 0.0, 0.0)
+        });
+    
+    allMeshDatas.push_back({
+        glm::vec4(1.0, 0.95, 0.0, -1.0),
+        glm::vec4(0.0, 0.0, 0.0, 0.0),
+        glm::vec4(50.0, 0.0, 0.0, 0.0),
+        glm::vec4(1.0, 0.0, 0.0, 0.0)
+        });
+        
+    //Crystals
     scene->meshes.push_back(crystalMesh);
     allMeshDatas.push_back({
         glm::vec4(0.2, 0.01, 1.4, 0.0),
