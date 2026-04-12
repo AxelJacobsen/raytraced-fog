@@ -43,6 +43,12 @@ struct MeshGPU {
     int test;
 };
 
+struct AnimTransform {
+    glm::vec4 data; // meshid rotSpeed bob speed
+    glm::vec4 staticPos; // used for moving + instancing
+};
+
+
 struct Texture {
     int width, height, channels;
     std::vector<unsigned char> data;

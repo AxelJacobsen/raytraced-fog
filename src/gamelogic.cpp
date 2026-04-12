@@ -23,8 +23,10 @@
 
 struct MeshData {
     glm::vec4 opRoIorNor;
+    glm::vec4 color;
+    glm::vec4 staticTransform;
+    glm::vec4 meshIdRotBobUses;
 };
-
 
 Fog::Shader* shader;
 Fog::Shader* compShader;
@@ -101,13 +103,17 @@ void initGame(GLFWwindow* window) {
 
     scene->lights.push_back({
         glm::vec4(-20.0,4.0,0.0,2.0), 
-        glm::vec4(0.65,0.5,0.0, 1.0)});
+        glm::vec4(0.9,0.7,0.3, 3.0)});
     scene->lights.push_back({
         glm::vec4(0.0,5.0,0.0,1.5), 
-        glm::vec4(0.0,0.0,1.0, 1.0)});    
+        glm::vec4(0.4,0.4,1.0, 3.0)});    
     scene->lights.push_back({
         glm::vec4(-52.0,4.0,12.0,0.5), 
-        glm::vec4(0.7,0.3,0.1, 1.0)});
+        glm::vec4(1.0,1.0,1.0,3.0)});        
+       // glm::vec4(0.7,0.3,0.1, 3.0)});        
+    scene->lights.push_back({
+        glm::vec4(80.0,25.0,2.0,1.0), 
+        glm::vec4(0.4,0.6,1.0, 4.0)});    
 
     /*
     if (!torusMesh->loadFromFile("../res/models/torus.fbx")) {
@@ -134,14 +140,36 @@ void initGame(GLFWwindow* window) {
     //scene->meshes.push_back(sphereMesh);
     //scene->meshes.push_back(torusMesh);
     scene->meshes.push_back(mapMesh);
-    allMeshDatas.push_back({ glm::vec4(1.0, 0.95, 0.0, -1.0) });
+    allMeshDatas.push_back({
+        glm::vec4(1.0, 0.95, 0.0, -1.0),
+        glm::vec4(0.0, 0.0, 0.0, 0.0),
+        glm::vec4(0.0, 0.0, 0.0, 0.0),
+        glm::vec4(0.0, 0.0, 0.0, 0.0)
+        });
     scene->meshes.push_back(supportMesh);
-    allMeshDatas.push_back({ glm::vec4(1.0, 0.95, 0.0, -1.0) });
+    allMeshDatas.push_back({
+        glm::vec4(1.0, 0.95, 0.0, -1.0),
+        glm::vec4(0.0, 0.0, 0.0, 0.0),
+        glm::vec4(0.0, 0.0, 0.0, 0.0),
+        glm::vec4(1.0, 0.0, 0.0, 0.0)
+        });
     scene->meshes.push_back(crystalMesh);
-    allMeshDatas.push_back({ glm::vec4(0.1, 0.02, 1.6, 0.0) });
+    allMeshDatas.push_back({
+        glm::vec4(0.2, 0.01, 1.4, 0.0),
+        glm::vec4(0.6, 0.0, 0.9, 1.0),
+        glm::vec4(0.0, 0.0, 0.0, 0.0),
+        glm::vec4(2.0, 0.1, 0.8, 0.0)
+        });    
+    allMeshDatas.push_back({
+        glm::vec4(0.2, 0.01, 1.4, 0.0),
+        glm::vec4(0.0, 1.0, 0.0, 1.0),
+        glm::vec4(-10.0, 6.0, 10.0, 0.0),
+        glm::vec4(2.0, 0.5, 0.1, 0.0)
+        });
 
     scene->generateTextureArray(0);
     scene->generateTextureArray(1);
+    scene->generateTextureArray(2);
 
     scene->build();
 
@@ -257,6 +285,7 @@ void initGame(GLFWwindow* window) {
 
     glBindTextureUnit(6, scene->texId);
     glBindTextureUnit(7, scene->normalTexId);
+    glBindTextureUnit(8, scene->roughnessTexId);
 
     GLuint meshDataBuffer;
     glGenBuffers(1, &meshDataBuffer);
@@ -267,7 +296,7 @@ void initGame(GLFWwindow* window) {
         GL_STATIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, meshDataBuffer);
 
-    glUniform1i(1, scene->meshes.size());
+    glUniform1i(1, allMeshDatas.size());
     glUniform1i(2, scene->lights.size());
     
     // set up vbo for vert data 

@@ -24,6 +24,7 @@ public:
     BVH sceneBvh;
     int texId;
     int normalTexId;
+    int roughnessTexId;
 
     void build() {
         bvhs.resize(meshes.size());
@@ -56,17 +57,16 @@ public:
 
 
         for (auto& mesh : meshes) {
-            if (type == 0 && mesh->textures.empty()) {
-                mesh->texId = -1;
-                continue;
-            }            
-            if (type == 1 && mesh->normals.empty()) {
+            if (mesh->textures.empty() || mesh->normals.empty() || mesh->roughness.empty()) {
                 mesh->texId = -1;
                 continue;
             }
             Texture& tex = mesh->textures[0];
             if (type == 1) {
                 tex = mesh->normals[0];
+            }            
+            else if (type == 2) {
+                tex = mesh->roughness[0];
             }
 
             mesh->texId = currentID;
@@ -128,6 +128,9 @@ public:
         }
         else if (type == 1) {
             normalTexId = texArray;
+        }        
+        else if (type == 2) {
+            roughnessTexId = texArray;
         }
     }
 };

@@ -136,7 +136,7 @@ namespace Fog
         GLfloat fYaw = 0.0f;
         GLfloat lastXPos = 0.0f;
         GLfloat lastYPos = 0.0f;
-        GLfloat cMovementSpeed = 2.5;
+        GLfloat cMovementSpeed = 8.5;
         GLfloat cMouseSensitivity;
         GLboolean keysInUse[512];
 

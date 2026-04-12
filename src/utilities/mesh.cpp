@@ -44,6 +44,9 @@ void Mesh::loadInTexture(aiTexture* tex, int index) {
     else if (index == 1) {
         normals.push_back(texture);
     }
+    else if (index == 2) {
+        roughness.push_back(texture);
+    }
 };
 
 bool Mesh::loadFromFile(const std::string& path) {
@@ -104,6 +107,11 @@ bool Mesh::loadFromFile(const std::string& path) {
             int index = std::atoi(str.C_Str() + 1);
             aiTexture* tex = scene->mTextures[index];
             loadInTexture(tex, 1);
+        }        
+        if (material->GetTexture(aiTextureType_DIFFUSE_ROUGHNESS, 0, &str) == AI_SUCCESS) {
+            int index = std::atoi(str.C_Str() + 1);
+            aiTexture* tex = scene->mTextures[index];
+            loadInTexture(tex, 2);
         }
     }
     return true;
