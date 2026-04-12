@@ -100,28 +100,22 @@ void initGame(GLFWwindow* window) {
 
     debugShader = new Fog::Shader();
     debugShader->makeBasicShader("../res/shaders/debug.vert", "../res/shaders/debug.frag");
-
+    
     scene->lights.push_back({
         glm::vec4(-26.0,6.5,4,1.0), 
-        glm::vec4(0.9,0.7,0.3, 3.0)});
+        glm::vec4(0.9,0.7,0.3, 2.0)});
     scene->lights.push_back({
         glm::vec4(0.0,5.0,0.0,1.5), 
-        glm::vec4(0.4,0.4,1.0, 2.0)});    
+        glm::vec4(0.4,0.4,1.0, 1.0)});    
     scene->lights.push_back({
         glm::vec4(-52.0,4.0,12.0,0.5), 
-        glm::vec4(1.0,1.0,1.0,2.0)});        
+        glm::vec4(1.0,1.0,1.0, 1.0)});      
     scene->lights.push_back({
         glm::vec4(80.0,25.0,2.0,3.0), 
-        glm::vec4(0.4,0.6,1.0, 10.0)});    
-
-    /*
-    if (!torusMesh->loadFromFile("../res/models/torus.fbx")) {
-        std::cout << "Error in loading torus" << std::endl;
-    };
-
-    if (!sphereMesh->loadFromFile("../res/models/sphere.fbx")) {
-        std::cout << "Error in loading sphere" << std::endl;
-    };*/
+        glm::vec4(0.4,0.6,1.0, 3.0)});         
+    scene->lights.push_back({
+        glm::vec4(80.0,25.0,2.0,-6.0),
+        glm::vec4(0.4,0.6,1.0, 3.0)});    
 
     if (!mapMesh->loadFromFile("../res/models/mine.glb")) {
         std::cout << "Error in loading map" << std::endl;
@@ -135,9 +129,6 @@ void initGame(GLFWwindow* window) {
         std::cout << "Error in loading support" << std::endl;
     };    
 
-
-    //scene->meshes.push_back(sphereMesh);
-    //scene->meshes.push_back(torusMesh);
     scene->meshes.push_back(mapMesh);
     allMeshDatas.push_back({
         glm::vec4(1.0, 0.95, 0.0, -1.0),
@@ -173,15 +164,30 @@ void initGame(GLFWwindow* window) {
     scene->meshes.push_back(crystalMesh);
     allMeshDatas.push_back({
         glm::vec4(0.2, 0.01, 1.4, 0.0),
-        glm::vec4(0.6, 0.0, 0.9, 1.0),
-        glm::vec4(0.0, 0.0, 0.0, 0.0),
+        glm::vec4(0.6, 0.0, 0.9, 0.0),
+        glm::vec4(7.0, 0.0, 0.0, 0.0),
         glm::vec4(2.0, 0.3, 0.8, 1.0)
         });    
     allMeshDatas.push_back({
         glm::vec4(0.2, 0.01, 1.4, 0.0),
-        glm::vec4(0.1, 0.8, 0.1, 1.0),
+        glm::vec4(0.1, 0.8, 0.1, 0.0),
         glm::vec4(-10.0, 6.0, 10.0, 0.0),
         glm::vec4(2.0, 0.7, 0.5, 1.0)
+        });
+
+    allMeshDatas.push_back({
+        glm::vec4(0.0, 0.03, 1.9, 0.0),
+        glm::vec4(0.25, 0.87, 0.81, 2.0),
+        glm::vec4(2.0, -8.0, 5.0, 0.0),
+        glm::vec4(2.0, -1.7, -0.5, 1.0)
+        });    
+    
+    //Spheres
+    allMeshDatas.push_back({
+        glm::vec4(0.0, 0.0, 1.2, 0.0),
+        glm::vec4(1.0, 1.0, 1.0, 0.0),
+        glm::vec4(-35.0, 4.0, 5.0, 0.0),
+        glm::vec4(-3.0, 0.0, 0.0, 0.0)
         });
 
     scene->generateTextureArray(0);

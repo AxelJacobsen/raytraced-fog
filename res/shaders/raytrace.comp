@@ -8,14 +8,17 @@ layout(rgba32f, binding = 0) uniform image2D img;
 #define PI 3.14159265359
 #define INF 1e30
 #define EPS 0.0003
-#define MAX_DEPTH 4
-#define MAX_LIGHT_DIST 12
+#define MAX_DEPTH 6
+#define MAX_LIGHT_DIST 16.0
 #define FOG_STEPS 10
 #define MAX_PHOTONS 128
 
 #define DO_FOG 1
+#define DO_FOG_SHADOW 0
+#define DO_FOG_BOUNCE 0
 #define DO_LOCAL 1
 #define DO_LOCAL_BOUNCE 0 // Should be 0 according to Whitted
+#define REFLECTION_MODE 0
 
 struct Vertex {
     vec4 position;
@@ -64,6 +67,7 @@ struct Hit {
     vec2 texCoord;
     vec3 tangent;
     vec3 bitangent;
+    vec4 meshCenter;
 
     Material mat;
 };
@@ -74,25 +78,17 @@ struct Light {
 };
 
 struct MeshData {
-    vec4 opRoIorNor;    //Opacity, roughness, Index of refection, normalindex
-    vec4 color;         // rgb, alpha = use or not
-    vec4 staticTransform;
-    vec4 meshIdRotBobUses; // meshid, rotation speed, bobspeed, uses animation
+    vec4 opRoIorNor;        //Opacity, roughness, Index of refection, normalindex
+    vec4 color;             // rgb, alpha = emission
+    vec4 staticTransform;   // static translate xyz
+    vec4 meshIdRotBobUses;  // meshid, rotation speed, bobspeed, uses animation
+                            // negative meshId = sphere rad
 };
 
 struct AnimTransform {
     vec3 pos;
     mat3 rot;
 };
-
-struct Photon
-{
-    vec3 pos;
-    vec3 normal;
-};
-
-Photon photons[MAX_PHOTONS];
-int photonCount = 0;
 
 layout(std430, binding = 1) buffer BVHNodes { BVHNode bvhNodes[]; };
 layout(std430, binding = 2) buffer VertexBuffer { Vertex vertexData[]; };
@@ -155,6 +151,29 @@ float noiseTwo(vec3 x)
         mix(hash(vec3(n + 157.0)), hash(vec3(n + 158.0)), f.x), f.y),
         mix(mix(hash(vec3(n + 113.0)), hash(vec3(n + 114.0)), f.x),
             mix(hash(vec3(n + 270.0)), hash(vec3(n + 271.0)), f.x), f.y), f.z);
+}
+
+vec3 cosineHemisphere(vec3 normal, vec3 incoming, float roughness)
+{
+    vec3 seedPos = gl_GlobalInvocationID;
+    float u1 = noise(seedPos);
+    float u2 = noise(seedPos + vec3(13.37, 42.0, 7.0));
+
+    float r = sqrt(u1);
+    float theta = 2.0 * 3.14159265 * u2;
+
+    float x = r * cos(theta);
+    float y = r * sin(theta);
+    float z = sqrt(1.0 - u1);
+
+    vec3 up = abs(normal.z) < 0.999 ? vec3(0, 0, 1) : vec3(1, 0, 0);
+    vec3 tangent = normalize(cross(up, normal));
+    vec3 bitangent = cross(normal, tangent);
+
+    vec3 sampleDir = tangent * x + bitangent * y + normal * z;
+
+    vec3 reflected = reflect(-incoming, normal);
+    return normalize(mix(reflected, sampleDir, roughness));
 }
 
 vec4 getTexture(Hit hit)
@@ -233,7 +252,7 @@ void applyMaterial(inout Hit hit)
 AnimTransform getAnim(float rotSpeed, float bobSpeed)
 {
     AnimTransform t;
-    // bobbing motion
+    // bobbing
     float bob = sin(time * bobSpeed) * (bobSpeed + 0.2 * sin(time * 0.5));
 
     t.pos = vec3(0.0, bob, 0.0);
@@ -255,8 +274,7 @@ AnimTransform getAnim(float rotSpeed, float bobSpeed)
 
 float lightAttenuation(Light light, vec3 point) {
     float dist = length(light.pos.xyz - point);
-    return light.color.a /
-        (1.0 + 0.1 * dist + 0.03 * dist * dist);
+    return light.color.a / (1.0 + 0.1 * dist + 0.05 * dist * dist);
 }
 
 
@@ -285,13 +303,13 @@ bool intersectTriangle(Ray ray, vec3 v0, vec3 v1, vec3 v2, out float t, out vec3
     return t > EPS;
 };
 
-bool intersectLightSphere(Ray ray, vec4 light, out float t, out float tClosest)
+bool intersectSphere(Ray ray, vec4 sphereCenter, out float t, out float tClosest)
 {
-    vec3 oc = ray.origin - light.xyz;
+    vec3 oc = ray.origin - sphereCenter.xyz;
 
     float a = dot(ray.dir, ray.dir);
     float b = 2.0 * dot(oc, ray.dir);
-    float c = dot(oc, oc) - light.w * light.w;
+    float c = dot(oc, oc) - sphereCenter.w * sphereCenter.w;
 
     float discriminant = b * b - 4.0 * a * c;
     if (discriminant < 0.0) return false;
@@ -356,7 +374,6 @@ void transformAABB(mat3 R, vec3 pos, vec3 pivot,
     vec3 center = (minB + maxB) * 0.5;
     vec3 extents = (maxB - minB) * 0.5;
 
-    // shift center relative to pivot, rotate, then shift back
     vec3 newCenter = R * (center - pivot) + pivot + pos;
 
     mat3 absR = mat3(
@@ -393,9 +410,6 @@ Hit intersectRay(Ray ray)
         }
         trans.pos += meshData[m].staticTransform.xyz;
 
-        //vec3 bmin = bvhAaBb[meshId].minBounds.xyz +  trans.pos;
-        //vec3 bmax = bvhAaBb[meshId].maxBounds.xyz +  trans.pos;
-
         vec3 pivot = (bvhAaBb[meshId].minBounds.xyz +
             bvhAaBb[meshId].maxBounds.xyz) * 0.5;
 
@@ -410,69 +424,98 @@ Hit intersectRay(Ray ray)
             bmax
         );
 
-        float tmin, tmax;
-        if (!intersectAABB(ray, bmin, bmax, tmin, tmax))
-            continue;
+        if (meshData[m].meshIdRotBobUses.x < 0) {
+            float tSphere;
+            float tClosest;
+            if (intersectSphere(ray, vec4(trans.pos, abs(meshData[m].meshIdRotBobUses.x)), tSphere, tClosest)) {
+                if (tSphere > hitState.distance) continue;
+                hitState.pos = ray.origin + ray.dir * tSphere;
+                hitState.normal = normalize(trans.pos - hitState.pos);
+                hitState.hit = true;
+                hitState.distance = tSphere;
+                hitState.meshId = meshId;
+                hitState.meshDatId = m;
+                hitState.lightId = 0;
+                hitState.mat.baseColor = meshData[m].color;
+                hitState.mat.emission = meshData[m].color.rgb * meshData[m].color.a;
+                hitState.isEmitter = meshData[m].color.a > 0.05;
+                hitState.mat.opacity = meshData[m].opRoIorNor.x;
+                hitState.mat.roughness = meshData[m].opRoIorNor.y;
+                hitState.mat.ior = meshData[m].opRoIorNor.z;
 
-        int first = bvhNodes[meshId].firstIndex;
-        int count = bvhNodes[meshId].triCount;
+                // a is a pseudo radius to furthest point from center
+                hitState.meshCenter = vec4((bmin + bmax) / 2.0, distance((bmin + bmax) / 2.0, bmax));
+            }
+        }
+        else { // Mesh
+            float tmin, tmax;
+            if (!intersectAABB(ray, bmin, bmax, tmin, tmax))
+                continue;
 
-        for (int i = 0; i < count; i++)
-        {
-            int baseIdx = (first + i) * 3;
+            int first = bvhNodes[meshId].firstIndex;
+            int count = bvhNodes[meshId].triCount;
 
-            uint i0 = indices[baseIdx + 0];
-            uint i1 = indices[baseIdx + 1];
-            uint i2 = indices[baseIdx + 2];
-
-            vec3 v0 = trans.rot * (vertexData[i0].position.xyz - pivot) + pivot + trans.pos;
-            vec3 v1 = trans.rot * (vertexData[i1].position.xyz - pivot) + pivot + trans.pos;
-            vec3 v2 = trans.rot * (vertexData[i2].position.xyz - pivot) + pivot + trans.pos;
-
-            float t;
-            vec3 bary;
-
-            if (intersectTriangle(ray, v0, v1, v2, t, bary))
+            for (int i = 0; i < count; i++)
             {
-                if (t < hitState.distance)
+                int baseIdx = (first + i) * 3;
+
+                uint i0 = indices[baseIdx + 0];
+                uint i1 = indices[baseIdx + 1];
+                uint i2 = indices[baseIdx + 2];
+
+                vec3 v0 = trans.rot * (vertexData[i0].position.xyz - pivot) + pivot + trans.pos;
+                vec3 v1 = trans.rot * (vertexData[i1].position.xyz - pivot) + pivot + trans.pos;
+                vec3 v2 = trans.rot * (vertexData[i2].position.xyz - pivot) + pivot + trans.pos;
+
+                float t;
+                vec3 bary;
+
+                if (intersectTriangle(ray, v0, v1, v2, t, bary))
                 {
-                    hitState.hit = true;
-                    hitState.distance = t;
-                    hitState.meshId = meshId;
-                    hitState.meshDatId = m;
-                    hitState.lightId = 0;
+                    if (t < hitState.distance)
+                    {
+                        hitState.hit = true;
+                        hitState.distance = t;
+                        hitState.meshId = meshId;
+                        hitState.meshDatId = m;
+                        hitState.lightId = 0;
 
-                    hitState.pos = ray.origin + ray.dir * t;
+                        hitState.pos = ray.origin + ray.dir * t;
 
-                    vec3 n0 = trans.rot * vertexData[i0].normal.xyz;
-                    vec3 n1 = trans.rot * vertexData[i1].normal.xyz;
-                    vec3 n2 = trans.rot * vertexData[i2].normal.xyz;
+                        vec3 n0 = trans.rot * vertexData[i0].normal.xyz;
+                        vec3 n1 = trans.rot * vertexData[i1].normal.xyz;
+                        vec3 n2 = trans.rot * vertexData[i2].normal.xyz;
 
-                    hitState.normal = normalize(n0 * bary.x + n1 * bary.y + n2 * bary.z);
+                        hitState.normal = normalize(n0 * bary.x + n1 * bary.y + n2 * bary.z);
 
-                    vec2 uv0 = vertexData[i0].uv.xy;
-                    vec2 uv1 = vertexData[i1].uv.xy;
-                    vec2 uv2 = vertexData[i2].uv.xy;
+                        vec2 uv0 = vertexData[i0].uv.xy;
+                        vec2 uv1 = vertexData[i1].uv.xy;
+                        vec2 uv2 = vertexData[i2].uv.xy;
 
-                    hitState.texCoord = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
+                        hitState.texCoord = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
 
-                    vec3 t0 = vertexData[i0].tangent.xyz;
-                    vec3 t1 = vertexData[i1].tangent.xyz;
-                    vec3 t2 = vertexData[i2].tangent.xyz;
+                        vec3 t0 = vertexData[i0].tangent.xyz;
+                        vec3 t1 = vertexData[i1].tangent.xyz;
+                        vec3 t2 = vertexData[i2].tangent.xyz;
 
-                    hitState.tangent = t0 * bary.x + t1 * bary.y + t2 * bary.z;
+                        hitState.tangent = t0 * bary.x + t1 * bary.y + t2 * bary.z;
 
-                    vec3 bt0 = vertexData[i0].bitangent.xyz;
-                    vec3 bt1 = vertexData[i1].bitangent.xyz;
-                    vec3 bt2 = vertexData[i2].bitangent.xyz;
+                        vec3 bt0 = vertexData[i0].bitangent.xyz;
+                        vec3 bt1 = vertexData[i1].bitangent.xyz;
+                        vec3 bt2 = vertexData[i2].bitangent.xyz;
 
-                    hitState.bitangent = bt0 * bary.x + bt1 * bary.y + bt2 * bary.z;
+                        hitState.bitangent = bt0 * bary.x + bt1 * bary.y + bt2 * bary.z;
 
-                    hitState.mat.baseColor = meshData[m].color;
-                    hitState.mat.emission = vec3(0.0);
-                    hitState.mat.opacity = meshData[m].opRoIorNor.x;
-                    hitState.mat.roughness = meshData[m].opRoIorNor.y;
-                    hitState.mat.ior = meshData[m].opRoIorNor.z;
+                        hitState.mat.baseColor = meshData[m].color;
+                        hitState.mat.emission = meshData[m].color.rgb * meshData[m].color.a;
+                        hitState.isEmitter = meshData[m].color.a > 0.05;
+                        hitState.mat.opacity = meshData[m].opRoIorNor.x;
+                        hitState.mat.roughness = meshData[m].opRoIorNor.y;
+                        hitState.mat.ior = meshData[m].opRoIorNor.z;
+
+                        // a is a pseudo radius to furthest point from center
+                        hitState.meshCenter = vec4((bmin + bmax) / 2.0, distance((bmin + bmax) / 2.0, bmax));
+                    }
                 }
             }
         }
@@ -483,20 +526,31 @@ Hit intersectRay(Ray ray)
     {
         float tLight;
         float tCenter;
-        if (intersectLightSphere(ray, lights[i].pos, tLight, tCenter))
-        {
-            float d = abs(distance(lights[i].pos.xyz, ray.origin + ray.dir * tCenter));
-            float r = lights[i].pos.w;
-            float attenuation = smoothstep(1.0, 0.0, d / r);
-            if (tLight < meshDist)
-                hitState.mat.emission += lights[i].color.rgb * lights[i].color.a * attenuation;
-
-            if (tLight < hitState.distance)
+        if (lights[i].pos.a > 0.0) {
+            if (intersectSphere(ray, lights[i].pos, tLight, tCenter))
             {
-                hitState.hit = true;
-                hitState.isEmitter = true;
-                hitState.lightId = i;
+                float d = abs(distance(lights[i].pos.xyz, ray.origin + ray.dir * tCenter));
+                float r = lights[i].pos.w;
+                float attenuation = smoothstep(1.0, 0.0, d / r);
+                if (tLight < meshDist)
+                    hitState.mat.emission += lights[i].color.rgb * lights[i].color.a * attenuation;
+
+                if (tLight < hitState.distance)
+                {
+                    hitState.hit = true;
+                    hitState.isEmitter = true;
+                    hitState.lightId = i;
+                }
             }
+        }
+        else if (hitState.meshDatId == int(abs(lights[i].pos.a))) {
+            //MESH EMITTER!!!
+            lights[i].pos.rgb = hitState.meshCenter.rgb;
+            lights[i].color = hitState.mat.baseColor;
+            hitState.hit = true;
+            hitState.isEmitter = true;
+            hitState.lightId = i;
+            hitState.mat.emission = hitState.mat.baseColor.rgb / hitState.mat.baseColor.a;
         }
     }
 
@@ -529,7 +583,6 @@ vec3 blinnPhong(Hit hit, vec3 rayDir)
         float dist = length(toLight);
         vec3 L = toLight / dist;
 
-
         float attenuation = lightAttenuation(lights[i], hit.pos);
         vec3 lightCol = lights[i].color.rgb * attenuation;
 
@@ -539,7 +592,7 @@ vec3 blinnPhong(Hit hit, vec3 rayDir)
                 lightCol *= shadowHit.mat.baseColor.rgb;
             }
             else {
-                continue;
+                continue; // Shadow behind opaque object
             }
         }
 
@@ -564,7 +617,6 @@ vec3 blinnPhong(Hit hit, vec3 rayDir)
     }
 
     result += 0.02 * albedo;
-
     result *= opacity;
 
     return result;
@@ -580,11 +632,12 @@ float fogDensity(vec3 p, bool flip)
     if (flip)
     {
         float n = noise(p * 0.7 + float(time) * 0.01);
-        return smoothstep(0.35, 0.85, n);
+        return n * n;
     }
     float flop = noiseTwo(p * 0.01);
-    return smoothstep(0.35, 0.85, flop);
+    return flop * flop;
 }
+
 
 vec3 fogTrace(Ray ray, float t0, float t1)
 {
@@ -598,7 +651,8 @@ vec3 fogTrace(Ray ray, float t0, float t1)
         float t = t0 + dt * (float(i));
         vec3 p = ray.origin + normalize(ray.dir) * t;
 
-        float dens =  max(fogDensity(p, true), 0.8);
+        float dens = max(fogDensity(p, true), 0.8);
+        if (dens <= 0.0001) continue;
 
         float sigma_s = dens * 1.0;
         float sigma_a = dens * 0.1;
@@ -610,44 +664,35 @@ vec3 fogTrace(Ray ray, float t0, float t1)
         for (int j = 0; j < numLights; j++)
         {
             float attenuation = lightAttenuation(lights[j], p);
-            if (attenuation < 0.01) continue;
+            if (attenuation < 0.001) continue;
 
-            vec3 Lvec = lights[j].pos.xyz - p;
+            vec3 Lvec = p- lights[j].pos.xyz;
             vec3 L = normalize(Lvec);
 
-            Hit shadowHit = calculateShadow(p, lights[j].pos.xyz);
-            if (shadowHit.hit && !shadowHit.isEmitter)
-                continue;
-            
-            float dl = length(Lvec) / FOG_STEPS;
-
-            for (int l = 0; l < FOG_STEPS; l++)
-            {
-                float tl = dl * (float(l));
-                vec3 lp = p + L * tl;
-
-                float light_dens = max(fogDensity(lp, false), 0.8);
-                float light_sigma_s = dens * 1.0;
-                float light_sigma_a = dens * 0.1;
-                sigma_t += sigma_s + sigma_a;
+            if (DO_FOG_SHADOW == 1) {
+                Hit shadowHit = calculateShadow(p, lights[i].pos.xyz);
+                if (shadowHit.hit && !shadowHit.isEmitter) {
+                    continue; // Shadow behind opaque object
+                }
             }
-
 
             // Henyey-Greenstein phase
             float g = 0.5;
             float mu = dot(V, L);
             float phase = (1.0 - g * g) /
                 (4.0 * PI * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
-            
-            lighting += mix(lights[j].color.rgb * phase, vec3(0), 1.0-attenuation);
-        }
 
-        sigma_t = sigma_t / FOG_STEPS;
+            lighting += mix(vec3(0),lights[j].color.rgb * phase, attenuation);
+        }
+        sigma_t = sigma_t ;
 
         float stepTrans = exp(-sigma_t * dt);
         float scatter = (1.0 - stepTrans);
 
-        accum += trans* scatter* (sigma_s / sigma_t) * lighting;
+        accum += trans * (sigma_s / sigma_t) * lighting * dt;
+        
+        // Beer–Lambert attenuation along view ray 
+        trans *= exp(-sigma_t * dt);
 
         if (trans < 0.001)
             break;
@@ -655,7 +700,6 @@ vec3 fogTrace(Ray ray, float t0, float t1)
 
     return accum;
 }
-
 
 vec3 trace(Ray ray)
 {
@@ -676,7 +720,7 @@ vec3 trace(Ray ray)
         vec3 N = normalize(hit.normal);
         ray.dir = normalize(ray.dir);
 
-        float roughness = clamp(hit.mat.roughness, 0.04, 1.0);
+        float roughness = hit.mat.roughness;
         float opacity = hit.mat.opacity;
         float ior = hit.mat.ior;
 
@@ -696,24 +740,25 @@ vec3 trace(Ray ray)
         if (DO_LOCAL == 1) {
             // Either track every bounce or only first
             if (DO_LOCAL_BOUNCE == 1 || DO_LOCAL_BOUNCE == bounce || ray.refracted) {
-                color += throughput * blinnPhong(hit, ray.dir);
+               color += throughput * blinnPhong(hit, ray.dir);
             }
         }
-
 
         // FOG
         float t0, t1;
         if (DO_FOG == 1 && intersectAABB(ray, fogMin, fogMax, t0, t1) && hit.distance >= t0)
         {
+            if (DO_FOG_BOUNCE == 1 || DO_FOG_BOUNCE == bounce) {
                 float tStart = max(t0, 0.0);
                 float tEnd = min(t1, hit.distance);
                 color += throughput * fogTrace(ray, tStart, tEnd);
+            }
         }
 
         // ENTER / EXIT
         bool entering = dot(ray.dir, N) < 0.0;
-        vec3 Nn = entering ? N : -N;
-
+        vec3 Nn = normalize(entering ? N : -N);
+        ray.dir = normalize(ray.dir);
         float n1 = entering ? 1.0 : ior;
         float n2 = entering ? ior : 1.0;
 
@@ -721,21 +766,30 @@ vec3 trace(Ray ray)
 
         if (!entering)
         {
-            vec3 absorption = vec3(0.1, 0.05, 0.15);
+            vec3 absorption = normalize(vec3(1.0) - normalize(hit.mat.baseColor.rgb)) / 10.0;
             throughput *= exp(-absorption * hit.distance);
             ray.refracted = true;
-        }
-        else
-        {
-            ray.refracted = false;
+            throughput *= 2.0;
         }
 
         // FRESNEL
         float F = fresnelReflectAmount(ray.dir, Nn, n1, n2, 0.04);
 
         // REFLECTION
+        // I wanted some randomness, but couldnt get cosine to work alone, and full reflect made everything "wet"
+        // This is a compromise to get a more interesting surface
         vec3 reflDir = reflect(ray.dir, Nn);
-        reflDir = normalize(mix(reflDir, Nn, roughness * 0.5));
+        if (REFLECTION_MODE == 0) {
+            reflDir = normalize(mix(reflDir, cosineHemisphere(ray.dir, Nn, roughness), 1.0 - roughness));
+        }
+        else if (REFLECTION_MODE == 1){
+            //Full reflect with roughness
+            reflDir = normalize(mix(reflDir, Nn, 1.0 - roughness));
+        }
+        else if (REFLECTION_MODE == 2) {
+            //This is a janky cosine func, alone it causes full randomness
+            reflDir = cosineHemisphere(ray.dir, Nn, roughness);
+        }
 
         // REFRACTION
         vec3 refrDir = refract(ray.dir, Nn, eta);
@@ -753,17 +807,15 @@ vec3 trace(Ray ray)
         else
         {
             ray.dir = reflDir;
+            ray.refracted = false;
         }
 
         // OFFSET
         ray.origin = hit.pos + ray.dir * EPS;
 
         // THROUGHPUT
-        float energyLoss = mix(0.85, 0.25, roughness);
+        float energyLoss = mix(0.9, 0.1, roughness);
         throughput *= energyLoss;
-
-        if (opacity < 0.2)
-            throughput *= 0.95;
 
         throughput = clamp(throughput, 0.0, 1.0);
     }
