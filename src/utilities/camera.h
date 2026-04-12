@@ -36,6 +36,7 @@ namespace Fog
         glm::mat4 projection;
         glm::mat4 PV;
         glm::mat4 invPV;
+        float currentTime = 0.0;
         int frame = 0;
 
         float focal_length = 1.0;
@@ -70,6 +71,7 @@ namespace Fog
 
         void Camera::UpdateCameraPos(GLfloat deltaTime)
         {
+            currentTime += deltaTime;
             // Extract movement information from the view matrix
             glm::vec3 dirX(view[0][0], view[1][0], view[2][0]);
             glm::vec3 dirY(view[0][1], view[1][1], view[2][1]);

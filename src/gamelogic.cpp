@@ -103,17 +103,16 @@ void initGame(GLFWwindow* window) {
 
     scene->lights.push_back({
         glm::vec4(-20.0,4.0,0.0,2.0), 
-        glm::vec4(0.9,0.7,0.3, 3.0)});
+        glm::vec4(0.9,0.7,0.3, 2.0)});
     scene->lights.push_back({
         glm::vec4(0.0,5.0,0.0,1.5), 
-        glm::vec4(0.4,0.4,1.0, 3.0)});    
+        glm::vec4(0.4,0.4,1.0, 2.0)});    
     scene->lights.push_back({
         glm::vec4(-52.0,4.0,12.0,0.5), 
-        glm::vec4(1.0,1.0,1.0,3.0)});        
-       // glm::vec4(0.7,0.3,0.1, 3.0)});        
+        glm::vec4(1.0,1.0,1.0,2.0)});        
     scene->lights.push_back({
-        glm::vec4(80.0,25.0,2.0,1.0), 
-        glm::vec4(0.4,0.6,1.0, 4.0)});    
+        glm::vec4(80.0,25.0,2.0,3.0), 
+        glm::vec4(0.4,0.6,1.0, 10.0)});    
 
     /*
     if (!torusMesh->loadFromFile("../res/models/torus.fbx")) {
@@ -158,13 +157,13 @@ void initGame(GLFWwindow* window) {
         glm::vec4(0.2, 0.01, 1.4, 0.0),
         glm::vec4(0.6, 0.0, 0.9, 1.0),
         glm::vec4(0.0, 0.0, 0.0, 0.0),
-        glm::vec4(2.0, 0.1, 0.8, 0.0)
+        glm::vec4(2.0, 0.3, 0.8, 1.0)
         });    
     allMeshDatas.push_back({
         glm::vec4(0.2, 0.01, 1.4, 0.0),
-        glm::vec4(0.0, 1.0, 0.0, 1.0),
+        glm::vec4(0.1, 0.8, 0.1, 1.0),
         glm::vec4(-10.0, 6.0, 10.0, 0.0),
-        glm::vec4(2.0, 0.5, 0.1, 0.0)
+        glm::vec4(2.0, 0.7, 0.5, 1.0)
         });
 
     scene->generateTextureArray(0);
@@ -358,7 +357,7 @@ void compute() {
     glUniform3fv(glGetUniformLocation(compShader->get(), "uCamPos"), 1, &camera->pos[0]);
     glUniformMatrix4fv(glGetUniformLocation(compShader->get(), "uInvPV"), 1, GL_FALSE, &camera->invPV[0][0]);
 
-    glUniform1i(3, glfwGetTime());
+    glUniform1f(3, camera->currentTime);
 
     glDispatchCompute(
         (GLuint)(windowWidth / 16 + 1),

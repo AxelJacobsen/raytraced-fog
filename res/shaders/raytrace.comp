@@ -112,7 +112,7 @@ uniform vec3 uCamPos;
 uniform mat4 uInvPV;
 
 vec3 fogMin = vec3(-70.0, -40.0, -20.0);
-vec3 fogMax = vec3(90.0, 1.0, 20.0);
+vec3 fogMax = vec3(90.0, 30.0, 20.0);
 
 float hash(vec3 p)
 {
@@ -233,14 +233,13 @@ void applyMaterial(inout Hit hit)
 AnimTransform getAnim(float rotSpeed, float bobSpeed)
 {
     AnimTransform t;
-
     // bobbing motion
-    float bob = sin(time * 2.0) * (0.3 + 0.2 * sin(time * 0.5));
+    float bob = sin(time * bobSpeed) * (bobSpeed + 0.2 * sin(time * 0.5));
 
     t.pos = vec3(0.0, bob, 0.0);
 
     // rotation around Y
-    float angle = time * 1.5; // speed
+    float angle = time * rotSpeed;
 
     float c = cos(angle);
     float s = sin(angle);
@@ -257,7 +256,7 @@ AnimTransform getAnim(float rotSpeed, float bobSpeed)
 float lightAttenuation(Light light, vec3 point) {
     float dist = length(light.pos.xyz - point);
     return light.color.a /
-        (1.0 + 0.1 * dist + 0.02 * dist * dist);
+        (1.0 + 0.1 * dist + 0.03 * dist * dist);
 }
 
 
@@ -350,6 +349,28 @@ float fresnelReflectAmount(vec3 incident, vec3 normal, float n1, float n2, float
     return ret;
 }
 
+void transformAABB(mat3 R, vec3 pos, vec3 pivot,
+    vec3 minB, vec3 maxB,
+    out vec3 outMin, out vec3 outMax)
+{
+    vec3 center = (minB + maxB) * 0.5;
+    vec3 extents = (maxB - minB) * 0.5;
+
+    // shift center relative to pivot, rotate, then shift back
+    vec3 newCenter = R * (center - pivot) + pivot + pos;
+
+    mat3 absR = mat3(
+        abs(R[0][0]), abs(R[0][1]), abs(R[0][2]),
+        abs(R[1][0]), abs(R[1][1]), abs(R[1][2]),
+        abs(R[2][0]), abs(R[2][1]), abs(R[2][2])
+    );
+
+    vec3 newExtents = absR * extents;
+
+    outMin = newCenter - newExtents;
+    outMax = newCenter + newExtents;
+}
+
 Hit intersectRay(Ray ray)
 {
     Hit hitState;
@@ -372,9 +393,22 @@ Hit intersectRay(Ray ray)
         }
         trans.pos += meshData[m].staticTransform.xyz;
 
-        vec3 bmin = bvhAaBb[meshId].minBounds.xyz +  trans.pos;
+        //vec3 bmin = bvhAaBb[meshId].minBounds.xyz +  trans.pos;
+        //vec3 bmax = bvhAaBb[meshId].maxBounds.xyz +  trans.pos;
 
-        vec3 bmax = bvhAaBb[meshId].maxBounds.xyz +  trans.pos;
+        vec3 pivot = (bvhAaBb[meshId].minBounds.xyz +
+            bvhAaBb[meshId].maxBounds.xyz) * 0.5;
+
+        vec3 bmin, bmax;
+        transformAABB(
+            trans.rot,
+            trans.pos,
+            pivot,
+            bvhAaBb[meshId].minBounds.xyz,
+            bvhAaBb[meshId].maxBounds.xyz,
+            bmin,
+            bmax
+        );
 
         float tmin, tmax;
         if (!intersectAABB(ray, bmin, bmax, tmin, tmax))
@@ -391,9 +425,9 @@ Hit intersectRay(Ray ray)
             uint i1 = indices[baseIdx + 1];
             uint i2 = indices[baseIdx + 2];
 
-            vec3 v0 = vertexData[i0].position.xyz + trans.pos;
-            vec3 v1 = vertexData[i1].position.xyz + trans.pos;
-            vec3 v2 = vertexData[i2].position.xyz + trans.pos;
+            vec3 v0 = trans.rot * (vertexData[i0].position.xyz - pivot) + pivot + trans.pos;
+            vec3 v1 = trans.rot * (vertexData[i1].position.xyz - pivot) + pivot + trans.pos;
+            vec3 v2 = trans.rot * (vertexData[i2].position.xyz - pivot) + pivot + trans.pos;
 
             float t;
             vec3 bary;
@@ -410,9 +444,9 @@ Hit intersectRay(Ray ray)
 
                     hitState.pos = ray.origin + ray.dir * t;
 
-                    vec3 n0 = vertexData[i0].normal.xyz; //rotate
-                    vec3 n1 = vertexData[i1].normal.xyz;
-                    vec3 n2 = vertexData[i2].normal.xyz;
+                    vec3 n0 = trans.rot * vertexData[i0].normal.xyz;
+                    vec3 n1 = trans.rot * vertexData[i1].normal.xyz;
+                    vec3 n2 = trans.rot * vertexData[i2].normal.xyz;
 
                     hitState.normal = normalize(n0 * bary.x + n1 * bary.y + n2 * bary.z);
 
@@ -508,7 +542,6 @@ vec3 blinnPhong(Hit hit, vec3 rayDir)
             }
         }
 
-
         float ndotl = max(dot(N, L), 0.0);
 
         vec3 H = normalize(L + V);
@@ -564,7 +597,7 @@ vec3 fogTrace(Ray ray, float t0, float t1)
         float t = t0 + dt * (float(i));
         vec3 p = ray.origin + normalize(ray.dir) * t;
 
-        float dens =  max(fogDensity(p, true), 0.0);
+        float dens =  max(fogDensity(p, true), 0.8);
 
         float sigma_s = dens * 1.0;
         float sigma_a = dens * 0.1;
@@ -581,7 +614,7 @@ vec3 fogTrace(Ray ray, float t0, float t1)
             Hit shadowHit = calculateShadow(p, lights[j].pos.xyz);
             if (shadowHit.hit && !shadowHit.isEmitter)
                 continue;
-
+            
             float dl = length(Lvec) / FOG_STEPS;
 
             for (int l = 0; l < FOG_STEPS; l++)
@@ -589,7 +622,7 @@ vec3 fogTrace(Ray ray, float t0, float t1)
                 float tl = dl * (float(l));
                 vec3 lp = p + L * tl;
 
-                float light_dens = max(fogDensity(lp, false), 0.0);
+                float light_dens = max(fogDensity(lp, false), 0.8);
                 float light_sigma_s = dens * 1.0;
                 float light_sigma_a = dens * 0.1;
                 sigma_t += sigma_s + sigma_a;
@@ -603,15 +636,15 @@ vec3 fogTrace(Ray ray, float t0, float t1)
             float phase = (1.0 - g * g) /
                 (4.0 * PI * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
             
-            lighting += mix(lights[j].color.rgb * phase, vec3(0.001), 1.0-attenuation);
+            lighting += mix(lights[j].color.rgb * phase, vec3(0), 1.0-attenuation);
         }
 
-        sigma_t = sigma_t / (FOG_STEPS * numLights);
+        sigma_t = sigma_t / FOG_STEPS;
 
         float stepTrans = exp(-sigma_t * dt);
         float scatter = (1.0 - stepTrans);
 
-        accum += trans* scatter* (sigma_s / sigma_t)* lighting;
+        accum += trans* scatter* (sigma_s / sigma_t) * lighting;
 
         if (trans < 0.001)
             break;
@@ -620,28 +653,6 @@ vec3 fogTrace(Ray ray, float t0, float t1)
     return accum;
 }
 
-vec3 gatherPhotons(vec3 pos, vec3 normal)
-{
-    vec3 result = vec3(0.0);
-    float radius = 0.5;
-
-    for (int i = 0; i < photonCount; i++)
-    {
-        Photon p = photons[i];
-
-        float dist = length(p.pos - pos);
-
-        if (dist < radius)
-        {
-            float weight = max(dot(normal, p.normal), 0.0);
-            result += weight;
-        }
-    }
-
-    // Normalize by area
-    float area = 3.14159 * radius * radius;
-    return result / area;
-}
 
 vec3 trace(Ray ray)
 {
@@ -675,7 +686,6 @@ vec3 trace(Ray ray)
             } else {
                 vec3 emit = mix(hit.mat.baseColor.rgb, hit.mat.emission, hit.mat.roughness);
                 color += throughput * emit;
-
             }
         }
 
