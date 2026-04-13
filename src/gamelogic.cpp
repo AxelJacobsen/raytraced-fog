@@ -104,12 +104,12 @@ void initGame(GLFWwindow* window) {
     scene->lights.push_back({
         glm::vec4(-26.0,6.5,4,1.0), 
         glm::vec4(0.9,0.7,0.3, 2.0)});
-    scene->lights.push_back({
-        glm::vec4(0.0,5.0,0.0,1.5), 
-        glm::vec4(0.4,0.4,1.0, 1.0)});    
+    //scene->lights.push_back({
+    //    glm::vec4(0.0,5.0,0.0,1.5), 
+    //    glm::vec4(0.4,0.4,1.0, 2.0)});    
     scene->lights.push_back({
         glm::vec4(-52.0,4.0,12.0,0.5), 
-        glm::vec4(1.0,1.0,1.0, 1.0)});      
+        glm::vec4(1.0,1.0,1.0, 2.0)});      
     scene->lights.push_back({
         glm::vec4(80.0,25.0,2.0,3.0), 
         glm::vec4(0.4,0.6,1.0, 3.0)});         
@@ -186,7 +186,7 @@ void initGame(GLFWwindow* window) {
     allMeshDatas.push_back({
         glm::vec4(0.0, 0.0, 1.2, 0.0),
         glm::vec4(1.0, 1.0, 1.0, 0.0),
-        glm::vec4(-35.0, 4.0, 5.0, 0.0),
+        glm::vec4(-35.0, 4.0, 10.0, 0.0),
         glm::vec4(-3.0, 0.0, 0.0, 0.0)
         });
 
